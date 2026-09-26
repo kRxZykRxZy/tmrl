@@ -275,7 +275,9 @@ class GhostOverlay:
         yaw = player["yaw"]
         pitch = player["pitch"]
 
-        for agent in self.trainer.telemetry.agents:
+        for agent in self.trainer.telemetry.agents[:self.trainer.agent_count]:
+            if not agent.alive:
+                continue
             projected = self._project(
                 agent.position,
                 p,
