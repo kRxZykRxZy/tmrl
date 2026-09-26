@@ -268,23 +268,15 @@ class Trainer(Client):
         )
 
     def _autosave_loop(self):
-        quick_interval = max(
-            0.5,
-            float(CFG.get("quick_checkpoint_seconds", 2.0)),
-        )
-        full_interval = max(
-            quick_interval,
-            float(CFG.get("full_checkpoint_seconds", 30.0)),
-        )
-        next_full = time.monotonic() + full_interval
+        next_full = time.monotonic() + self.full_checkpoint_seconds
 
-        while not self.autosave_stop.wait(quick_interval):
+        while not self.autosave_stop.wait(self.quick_checkpoint_seconds):
             try:
                 self.save_quick_checkpoint()
 
                 if time.monotonic() >= next_full:
                     self.save_now()
-                    next_full = time.monotonic() + full_interval
+                    next_full = time.monotonic() + self.full_checkpoint_seconds
             except Exception:
                 LOG.exception("background checkpoint save failed")
 
