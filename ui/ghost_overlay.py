@@ -13,6 +13,16 @@ WS_EX_TRANSPARENT = 0x00000020
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_NOACTIVATE = 0x08000000
 
+WM_NCHITTEST = 0x0084
+HTTRANSPARENT = -1
+SW_SHOWNOACTIVATE = 4
+SW_HIDE = 0
+HWND_TOPMOST = -1
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOACTIVATE = 0x0010
+SWP_SHOWWINDOW = 0x0040
+
 
 class GhostOverlay:
     def __init__(self, trainer):
@@ -38,6 +48,8 @@ class GhostOverlay:
         self._make_click_through()
         self.visible = True
         self.last_hwnd = None
+        self._old_wndproc = None
+        self._wndproc = None
 
     def _make_click_through(self):
         hwnd = self.root.winfo_id()
@@ -50,10 +62,68 @@ class GhostOverlay:
             GWL_EXSTYLE,
             style | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         )
-        user32.SetWindowPos(
-            hwnd, -1, 0, 0, 0, 0,
-            0x0001 | 0x0002 | 0x0010 | 0x0040,
+
+        # WS_EX_TRANSPARENT affects painting order, but does NOT by itself
+        # make mouse input pass through. Return HTTRANSPARENT from the native
+        # hit-test so Windows sends clicks to the game underneath instead.
+        WNDPROC = ctypes.WINFUNCTYPE(
+            ctypes.c_longlong,
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
         )
+        self._wndproc = WNDPROC(self._overlay_wndproc)
+        self._old_wndproc = set_style.__self__ if False else None
+
+        # Get the existing Tk window procedure and replace it. Keep both the
+        # callback and old pointer alive for the lifetime of the overlay.
+        get_proc = user32.GetWindowLongPtrW
+        self._old_wndproc = get_proc(hwnd, -4)
+        set_style(hwnd, -4, ctypes.cast(self._wndproc, ctypes.c_void_p).value)
+
+        user32.SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            0, 0, 0, 0,
+            SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        )
+
+    def _overlay_wndproc(self, hwnd, msg, wparam, lparam):
+        if msg == WM_NCHITTEST:
+            return HTTRANSPARENT
+
+        user32 = ctypes.windll.user32
+        call_proc = user32.CallWindowProcW
+        call_proc.restype = ctypes.c_longlong
+        call_proc.argtypes = [
+            ctypes.c_void_p,
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        ]
+        return call_proc(
+            ctypes.c_void_p(self._old_wndproc),
+            hwnd,
+            msg,
+            wparam,
+            lparam,
+        )
+
+    def _show_native(self, visible):
+        hwnd = self.root.winfo_id()
+        ctypes.windll.user32.ShowWindow(
+            hwnd,
+            SW_SHOWNOACTIVATE if visible else SW_HIDE,
+        )
+        if visible:
+            ctypes.windll.user32.SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0, 0, 0, 0,
+                SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE,
+            )
 
     def close(self):
         try:
@@ -63,10 +133,7 @@ class GhostOverlay:
 
     def set_visible(self, visible: bool):
         self.visible = bool(visible)
-        if self.visible:
-            self.root.deiconify()
-        else:
-            self.root.withdraw()
+        self._show_native(self.visible)
 
     def _game_rect(self):
         hwnd = self.trainer.find_game_window()
@@ -175,11 +242,11 @@ class GhostOverlay:
 
         game = self._game_rect()
         if not game:
-            self.root.withdraw()
+            self._show_native(False)
             self.root.after(100, self.update)
             return
 
-        self.root.deiconify()
+        self._show_native(True)
         hwnd, left, top, right, bottom = game
         self.last_hwnd = hwnd
         width = right - left
