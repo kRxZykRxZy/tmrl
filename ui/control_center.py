@@ -62,6 +62,7 @@ class ControlCenter:
     def _build_replay(self):
         """Build a lightweight replay tab compatible with the current detached trainer."""
         self.replay_frame = tk.Frame(self.replay_tab, bg="#0d1117")
+        self.replay_frame.pack(fill="both", expand=True)
         tk.Label(
             self.replay_frame,
             text="Replay / training history",
@@ -81,6 +82,7 @@ class ControlCenter:
     def _build_race(self):
         """Build the race/training setup tab."""
         self.race_frame = tk.Frame(self.race_tab, bg="#0d1117")
+        self.race_frame.pack(fill="both", expand=True)
         tk.Label(
             self.race_frame,
             text="Race Setup",
@@ -100,6 +102,7 @@ class ControlCenter:
     def _build_settings(self):
         """Build trainer settings controls."""
         self.settings_frame = tk.Frame(self.settings_tab, bg="#0d1117")
+        self.settings_frame.pack(fill="both", expand=True)
         tk.Label(
             self.settings_frame,
             text="Training Settings",
@@ -121,7 +124,7 @@ class ControlCenter:
         tk.Spinbox(
             row,
             from_=1,
-            to=int(self.trainer.max_agents),
+            to=int(self.trainer.engine.population.shape[0]),
             textvariable=self.agent_count_var,
             width=6,
             command=lambda: self.trainer.set_agent_count(self.agent_count_var.get()),
@@ -136,7 +139,7 @@ class ControlCenter:
             increment=0.1,
             textvariable=self.speed_var,
             width=6,
-            command=lambda: self.trainer.set_sim_speed(self.speed_var.get()),
+            command=lambda: self.trainer.set_game_speed(self.speed_var.get()),
         ).pack(side="left", padx=10)
 
     def _build_dashboard(self):
@@ -524,6 +527,23 @@ class ControlCenter:
             self.wall_photos.append(tile)
 
         self.wall_status.config(text=status)
+
+    def _draw_replay(self):
+        """Refresh the lightweight replay/training-history panel."""
+        if not hasattr(self, "replay_status"):
+            return
+        try:
+            snap = self.trainer.replay_snapshot()
+            self.replay_status.config(
+                text=(
+                    f"Generation {snap.get('generation', 0)}  |  "
+                    f"Agent {snap.get('agent_id', self.replay_agent)}  |  "
+                    f"Frame {snap.get('index', self.replay_index)}  |  "
+                    f"Samples {snap.get('samples', 0)}"
+                )
+            )
+        except Exception:
+            pass
 
     def refresh(self):
         try:
