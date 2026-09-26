@@ -77,7 +77,8 @@ async def handle_client(reader, writer, session):
         LOG.info("client disconnected: %s", peer)
 
 async def main():
-    server = await asyncio.start_server(lambda r,w: handle_client(r,w,TrainingSession()), CONFIG["server_host"], int(CONFIG["server_port"]), limit=2_500_000)
+    session = TrainingSession()
+    server = await asyncio.start_server(lambda r,w: handle_client(r,w,session), CONFIG["server_host"], int(CONFIG["server_port"]), limit=2_500_000)
     LOG.info("TMRL listening on %s", ", ".join(str(s.getsockname()) for s in server.sockets or []))
     async with server: await server.serve_forever()
 
