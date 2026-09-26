@@ -1,114 +1,65 @@
-# TMRL — 50-Agent TMInterface Evolution Trainer
+# TMRL — Single-Instance 50-Agent TrackMania Evolution Trainer
 
-TMRL trains 50 neural-network genomes concurrently against TrackMania Nations Forever through legacy TMInterface 1.4.x and its Python client.
+TMRL trains a population of **50 neural-network-controlled virtual cars through one TMNF + TMInterface 1.4.3 process**.
 
-## Architecture
+This revision intentionally removes the old architecture that launched 50 game processes. A single TMInterface server can expose simulation state save/rewind operations from the Python client, so TMRL stores 50 independent trajectory states and time-slices them through one rendered game process. TMInterface documents that `rewind_to_state()` is callable from `on_run_step` and that rewinding immediately advances the restored state by the next physics step. citeturn379962search0
 
-```
-50 separate TMNF/TMInterface instances
-        │
-        ├── TMInterface0 → genome 0
-        ├── TMInterface1 → genome 1
-        ├── ...
-        └── TMInterface49 → genome 49
-                 │
-                 ▼
-          one Python coordinator
-                 │
-                 ├── 50 observations
-                 ├── one NumPy population inference
-                 ├── 50 analog steering/gas commands
-                 └── evolutionary reset
-```
+## What "50 cars in one instance" means
 
-TMInterface's Python API supports multiple server connections from one script, and its `on_run_step` hook is called every physics tick. Its legacy client also exposes vehicle position, velocity, yaw/pitch/roll and analog `steer/gas` injection. citeturn897701search0turn805361search0
+TrackMania's legacy Python API does **not** provide a public API for creating 50 simultaneous physical player vehicles inside one legacy game process.
 
-This means the simultaneous-population design is **50 concurrent game instances**, not 50 physical player vehicles inside one TMNF process.
+Instead TMRL keeps:
 
-## Version requirement
+- 50 genomes
+- 50 telemetry records
+- 50 replay histories
+- 50 saved TMInterface simulation states
+- 50 safe recovery states
 
-The official Python client is legacy and is only compatible with TMInterface versions below 2.0. The upstream client README explicitly points users who need this API to TMInterface 1.4.3. The package installed by `pip` is `tminterface==1.0.2`. citeturn549681search0turn549681search1turn549681search3
+and rapidly switches the one real TMNF vehicle between those states.
 
-Do not launch TMInterface 2.x with this Python package. TMInterface 2.x uses its newer AngelScript plugin API instead. citeturn549681search0turn588549search0
+Therefore:
 
-## Install
+- only **one** `TmForever.exe` runs;
+- only **one** TMInterface server runs;
+- the 50 agents train independently in the shared physics process;
+- the currently selected trajectory is what the real TMNF camera displays;
+- the control centre shows the other 49 as live telemetry/replay tiles rather than 49 simultaneous rendered game cameras.
 
-Install TMInterface 1.4.3 for TMNF, then install the Python dependencies:
-
-```cmd
-python -m pip install -r requirements.txt
-```
-
-TMInterface is installed through the TrackMania tooling/ModLoader or its standalone distribution; the official installation guide documents both approaches. citeturn445116search1
-
-## Start 50 game instances
-
-The repository includes `launch_50.cmd`.
-
-First set the executable path in Windows CMD:
-
-```cmd
-set "TMI_EXE=C:\path\to\TMInterface.exe"
-```
-
-Then:
-
-```cmd
-launch_50.cmd
-```
-
-This sends 50 independent launch requests with a one-second spacing.
-
-After they open, verify that the TMInterface server names exposed by the instances are:
+## Neural controller
 
 ```
-TMInterface0
-TMInterface1
-...
-TMInterface49
+8 inputs
+  ↓
+32 ReLU
+  ↓
+24 ReLU
+  ↓
+2 Tanh
 ```
 
-TMInterface's API identifies servers by these server names; its Python client accepts the server name explicitly. citeturn897701search0
-
-Load the **same track** into all 50 instances and leave them in normal run mode at the start of the race.
-
-## Start training
-
-From the repository directory:
-
-```cmd
-run.cmd
-```
-
-or:
-
-```cmd
-python main.py
-```
-
-The coordinator connects one Python client to each named instance, requests the current simulation state on every run step, updates persistent telemetry, calculates one vectorized forward pass for the 50 genomes at about 60 Hz, and injects each car's individual analog steering/gas command.
-
-Every instance is forced to normal `1.0x` game speed through `set_speed(1.0)`; TMInterface documents 1 as normal speed. citeturn788284search0turn588549search3
-
-## Evolution
-
-Initial genomes are random.
-
-The network is:
-
-```
-8 → 32 ReLU → 24 ReLU → 2 Tanh
-```
-
-The exact parameter count is **1,130**, not 1,024:
+The exact parameter count is:
 
 ```
 8×32 + 32 + 32×24 + 24 + 24×2 + 2 = 1,130
 ```
 
-The top five genomes survive unchanged. The remaining 45 are cloned from the elite set and independently mutated at a 15% per-parameter rate using Gaussian noise with sigma 0.15.
+The eight inputs are normalized speed, X, Y, Z, yaw, and three proximity channels.
 
-Fitness is:
+## Evolution
+
+Population: 50
+
+Elite count: 5
+
+The top five genomes are copied unchanged. The remaining 45 are cloned from the elite set using roulette-wheel selection and mutated with:
+
+```
+mutation probability = 15%
+Gaussian sigma = 0.15
+```
+
+Fitness:
 
 ```
 1.5 × maximum distance
@@ -116,39 +67,137 @@ Fitness is:
 − wall/contact penalty
 ```
 
-A generation ends after 20 seconds or when all agents have crashed. Each instance is then reset with:
+A generation ends after 20 seconds or when no live virtual agents remain.
+
+## Automatic recovery
+
+Every virtual agent continuously checks for:
+
+- falling below the configured Y coordinate;
+- moving outside the configured map coordinate bounds;
+- near-zero movement for the configured stuck timeout;
+- very low speed for the configured stuck timeout.
+
+When one of these conditions fires, the agent is rewound to its latest safe state instead of wasting the rest of the generation.
+
+Safe states are updated after meaningful progress, and the generation start state is always retained as a fallback.
+
+The controls are configurable in `config/hyperparams.json`.
+
+## Persistent NPZ checkpoints
+
+The trainer automatically saves approximately every second by default.
+
+The runtime creates:
 
 ```
-press system retry
+tmrl/
+└── checkpoints/
+    ├── population.npz
+    ├── agent_00.npz
+    ├── agent_01.npz
+    ├── ...
+    ├── agent_49.npz
+    └── manifest.json
 ```
 
-## Crash detection
+Each agent checkpoint contains its genome, state blob, position/velocity, race time, distance, speed statistics, wall penalty, lap/checkpoint timing and bounded replay history.
 
-An agent enters the crashed state after 1.5 seconds if its measured speed remains below 1 km/h for the configured debounce interval. Its next commands are zeroed while the other instances continue.
+The population checkpoint contains all 50 genomes, generation number, best score and map name.
 
-## LIDAR / wall proximity
+On startup TMRL loads the saved population and agent checkpoints. If an old TMInterface state blob cannot be reconstructed by the installed client build, the trainer falls back to the current race-start state while retaining the learned population and replay data.
 
-The legacy Python API exposes rich vehicle physics state, but it does not expose a generic public world-mesh raycast call. The bridge therefore uses collision-aware proximity channels derived from TMInterface's exposed lateral-contact/sliding state rather than claiming to have a geometric raycast it cannot actually obtain from the API. The three channels remain part of the 8-input network and are updated continuously.
+## Control Center
 
-For true geometric Front/Left/Right raycasts on arbitrary maps, the bridge needs a map-specific TMInterface plugin/raycast provider. TMInterface 2.x has a documented AngelScript plugin API, but that is a different API generation from this legacy Python-client build. citeturn503300search3turn588549search0
+The Tkinter control centre includes:
 
-## HUD
+### Dashboard
+Generation, best fitness, mean fitness, active population, training speed, focused car, commands, lap/checkpoint information, wall penalty and recovery count.
 
-`ui/standalone_ui.py` creates a click-through Windows HUD with:
+### Agents
+A 50-row table containing:
 
-- generation
-- all-time best fitness
-- active population count
-- focused agent
+- alive/dead state
 - speed
 - distance
 - fitness
-- proximity channels
-- hidden-layer activation bars
-- A/D global focus switching
+- lap
+- lap time
+- average speed
+- wall penalty
 
-## Important hardware reality
+Click an agent to focus it.
 
-Fifty full TMNF game instances at 1.0x is a very heavy workload. The code is designed for concurrent operation, but whether one PC can render all 50 instances in real time depends on its CPU, RAM, GPU and graphics settings. Running the games windowed at low resolution is the practical configuration.
+### Camera Wall
+The actual TMNF window is captured into the control centre. The selected virtual car can be switched into the real game camera, while the 50-agent wall provides live state tiles.
 
-TMInterface identifies these as tool-assisted runs; they should not be submitted as legitimate leaderboard runs. citeturn588549search0
+Because there is only one physical game renderer, a true 50-way simultaneous rendered camera wall is not possible without multiple game processes.
+
+### Replay
+Select any agent and inspect its stored trajectory. You can play the trajectory as a 2D replay preview and request the selected agent to be replayed inside TMNF.
+
+### Race Setup
+Load a map from the TMNF Tracks folder with TMInterface's documented `map` command, restart the race, or toggle single-agent testing. The TMInterface command guide documents `map <filename>` and `press delete` for restarting the current race. citeturn159668search0
+
+### Settings
+Change:
+
+- TMInterface game-speed factor;
+- background checkpoint/replay worker thread count.
+
+The trainer's logical agents are still multiplexed through one TMInterface callback stream.
+
+## Installation
+
+You need:
+
+- TrackMania Nations Forever
+- TMInterface **1.4.3**
+- Python 3.10+
+- Windows
+
+The upstream Python client is legacy and is intended for TMInterface versions below 2.0; its README points Python-client users to TMInterface 1.4.3. citeturn549681search0
+
+Install Python dependencies:
+
+```cmd
+python -m pip install -r requirements.txt
+```
+
+## Run
+
+Do **not** run `launch_50.cmd`. It has been removed.
+
+Start the one TMInterface instance and the TMRL control centre with:
+
+```cmd
+run.cmd
+```
+
+By default the repository expects:
+
+```
+C:\Program Files (x86)\Steam\steamapps\common\TrackMania Nations Forever
+```
+
+If your installation is elsewhere, edit the `TMI_DIR` line at the top of `run.cmd`.
+
+You can also start TMInterface manually from its installation directory, load a map, put the car into normal race mode, then run:
+
+```cmd
+python main.py
+```
+
+## Training speed
+
+Because 50 logical trajectories are time-sliced through one game process, `1x` game speed would make each individual trajectory receive only a small fraction of the normal physics tick budget.
+
+The default training speed is therefore **50x**. It is configurable from the Settings tab.
+
+TMInterface documents the `speed` variable and warns that very high speed factors can affect the input subsystem; TMRL caps the UI control at 100x. citeturn379962search0turn159668search0
+
+When you want to watch one agent normally, pause training or lower the game speed, select that agent, and use the camera/replay controls.
+
+## Important
+
+TMInterface explicitly treats these as tool-assisted runs. They are for training, research and experimentation and should not be submitted as legitimate public leaderboard runs. citeturn159668search1
