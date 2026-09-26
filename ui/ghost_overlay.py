@@ -157,47 +157,130 @@ class GhostOverlay:
         return hwnd, rect.left, rect.top, rect.right, rect.bottom
 
     @staticmethod
-    def _project(agent_pos, player_pos, player_yaw, player_pitch, width, height):
-        # Approximate the default chase camera using the player's car transform.
-        yaw = float(player_yaw)
-        pitch = float(player_pitch)
-        cy = math.cos(yaw)
-        sy = math.sin(yaw)
-        forward = (sy, 0.0, cy)
+    def _project(agent_pos, camera_pos, camera_yaw, camera_pitch, width, height, fov_deg=92.0):
+        """Project a world point through a TMNF-like chase camera.
 
-        # Raise camera and place it behind the player's car.
-        camera = (
-            player_pos[0] - forward[0] * 6.0,
-            player_pos[1] + 2.8,
-            player_pos[2] - forward[2] * 6.0,
-        )
+        TMInterface gives us the player's world transform, while the detached
+        simulator gives us ghost world transforms. This keeps the overlay
+        independent of TMNF input/control and makes the ghosts line up with
+        the player's actual view much more reliably than the old fixed camera.
+        """
+        yaw = float(camera_yaw)
+        pitch = float(camera_pitch)
+        forward = (math.sin(yaw), 0.0, math.cos(yaw))
+        right = (math.cos(yaw), 0.0, -math.sin(yaw))
         rel = (
-            agent_pos[0] - camera[0],
-            agent_pos[1] - camera[1],
-            agent_pos[2] - camera[2],
+            float(agent_pos[0]) - float(camera_pos[0]),
+            float(agent_pos[1]) - float(camera_pos[1]),
+            float(agent_pos[2]) - float(camera_pos[2]),
         )
 
-        right = (cy, 0.0, -sy)
         horiz = rel[0] * right[0] + rel[2] * right[2]
         depth = rel[0] * forward[0] + rel[2] * forward[2]
 
-        # Basic pitch rotation.
         cp = math.cos(pitch)
         sp = math.sin(pitch)
         vert = rel[1] * cp - depth * sp
         depth2 = rel[1] * sp + depth * cp
-
-        if depth2 <= 0.5:
+        if depth2 <= 0.15:
             return None
 
-        fov = math.radians(90.0)
-        focal = (width * 0.5) / math.tan(fov * 0.5)
+        focal = (width * 0.5) / math.tan(math.radians(fov_deg) * 0.5)
         sx = width * 0.5 + horiz * focal / depth2
-        sy2 = height * 0.54 - vert * focal / depth2
-
-        if sx < -100 or sx > width + 100 or sy2 < -100 or sy2 > height + 100:
+        sy = height * 0.54 - vert * focal / depth2
+        if sx < -180 or sx > width + 180 or sy < -180 or sy > height + 180:
             return None
-        return sx, sy2, depth2
+        return sx, sy, depth2
+
+    def _draw_camera_wall(self, snapshot):
+        """Draw one simulated camera view for every live ghost.
+
+        These are detached-simulator camera views: TMNF cannot expose a real
+        CGameCtnGhost camera for these agents because they are not native game
+        vehicles. The view is nevertheless generated from each agent's actual
+        position/yaw, so every tile follows that ghost independently.
+        """
+        self.wall_canvas.delete("all")
+        agents = self.trainer.telemetry.agents[:self.trainer.agent_count]
+        live = [a for a in agents if a.alive]
+        if not live:
+            self.wall_canvas.create_text(
+                20, 20, anchor="nw",
+                text="No live ghosts",
+                fill="white",
+                font=("Segoe UI", 12, "bold"),
+            )
+            return
+
+        cols = 3
+        tile_w = 205
+        tile_h = 155
+        for slot, camera_agent in enumerate(live):
+            col = slot % cols
+            row = slot // cols
+            x = col * tile_w
+            y = row * tile_h
+            self.wall_canvas.create_rectangle(
+                x + 2, y + 2, x + tile_w - 4, y + tile_h - 4,
+                fill="#090c10",
+                outline="#69b8cc" if camera_agent.agent_id == self.trainer.focus else "#303840",
+                width=2,
+            )
+            inner_w = tile_w - 10
+            inner_h = tile_h - 30
+            camera_pos = (
+                float(camera_agent.position[0]),
+                float(camera_agent.position[1]) + 1.6,
+                float(camera_agent.position[2]),
+            )
+            camera_yaw = float(self.trainer.simulator.start_yaw + camera_agent.yaw_pitch_roll[0])
+            camera_pitch = 0.0
+
+            # Road/corridor guide, giving the camera a useful forward reference
+            # even though the detached simulator does not have TMNF track meshes.
+            cx = x + tile_w * 0.5
+            horizon = y + 58
+            self.wall_canvas.create_polygon(
+                cx - 18, y + tile_h - 8,
+                cx + 18, y + tile_h - 8,
+                cx + 7, horizon,
+                cx - 7, horizon,
+                fill="#20262c",
+                outline="",
+            )
+            self.wall_canvas.create_line(
+                cx - 7, horizon, cx - 18, y + tile_h - 8,
+                fill="#68737d",
+            )
+            self.wall_canvas.create_line(
+                cx + 7, horizon, cx + 18, y + tile_h - 8,
+                fill="#68737d",
+            )
+
+            for other in live:
+                if other is camera_agent:
+                    continue
+                projected = self._project(
+                    other.position, camera_pos, camera_yaw, camera_pitch,
+                    inner_w, inner_h, 92.0,
+                )
+                if projected is None:
+                    continue
+                px, py, depth = projected
+                px += x + 5
+                py += y + 5
+                size = max(3.0, min(22.0, 230.0 / max(depth, 4.0)))
+                self._draw_car(px, py, size, True, other.agent_id, other.last_steer)
+
+            self.wall_canvas.create_text(
+                x + 8, y + 8, anchor="nw",
+                text=f"AI {camera_agent.agent_id:02d}  {camera_agent.speed_kmh:.0f} km/h",
+                fill="white",
+                font=("Consolas", 9, "bold"),
+            )
+
+        self.wall_canvas.configure(scrollregion=(0, 0, cols * tile_w, max(tile_h, math.ceil(len(live) / cols) * tile_h)))
+
 
     def _draw_car(self, x, y, size, alive, agent_id, steer):
         color = "#9fe8ff" if alive else "#666666"
@@ -277,16 +360,26 @@ class GhostOverlay:
         yaw = player["yaw"]
         pitch = player["pitch"]
 
+        # Match the player's chase camera: put the virtual camera slightly
+        # above and behind the user's car. Ghosts are therefore rendered in
+        # the same screen space while the user keeps complete control of TMNF.
+        camera_pos = (
+            float(p[0]) - math.sin(yaw) * 4.5,
+            float(p[1]) + 2.2,
+            float(p[2]) - math.cos(yaw) * 4.5,
+        )
+
         for agent in self.trainer.telemetry.agents[:self.trainer.agent_count]:
             if not agent.alive:
                 continue
             projected = self._project(
                 agent.position,
-                p,
+                camera_pos,
                 yaw,
                 pitch,
                 width,
                 height,
+                92.0,
             )
             if projected is None:
                 continue
