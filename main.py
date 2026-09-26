@@ -155,7 +155,7 @@ class Trainer(Client):
             generation = self.engine.generation
             best = self.engine.best_score
             map_name = self.map_name
-            agents = [(a, population[a.agent_id].copy()) for a in self.telemetry.agents]
+            agents = [(copy.deepcopy(a), population[a.agent_id].copy()) for a in self.telemetry.agents]
         self.executor.submit(self.checkpoints.save_population, population, generation, best, map_name)
         for agent, genome in agents:
             self.executor.submit(self.checkpoints.save_agent, agent, genome)
