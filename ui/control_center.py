@@ -45,7 +45,8 @@ class ControlCenter:
             ("New Race", lambda:self.trainer.ui_command("new_race")),
             ("Single Agent", lambda:self.trainer.ui_command("single_agent")),
             ("Camera Sweep", self.trainer.toggle_camera_sweep),
-            ("Save", self.trainer.save_now),
+            ("Save Checkpoint", lambda:self.trainer.ui_command("save_checkpoint")),
+            ("Load Checkpoint", lambda:self.trainer.ui_command("load_checkpoint")),
         ]:
             ttk.Button(buttons, text=text, command=cmd).pack(side="left", padx=2)
         nb = ttk.Notebook(self.root); nb.pack(fill="both", expand=True, padx=8, pady=(0,8))
@@ -135,9 +136,26 @@ class ControlCenter:
         ttk.Spinbox(frm,from_=1,to=16,textvariable=self.threads_var,width=10).grid(row=6,column=1,padx=8)
         ttk.Button(frm,text="Apply threads",command=lambda:self.trainer.set_worker_threads(int(self.threads_var.get()))).grid(row=6,column=2)
 
+        ttk.Label(frm,text="Quick checkpoint interval (seconds)").grid(row=7,column=0,sticky="w")
+        self.quick_save_var=tk.DoubleVar(value=self.trainer.quick_checkpoint_seconds)
+        ttk.Spinbox(frm,from_=0.5,to=30.0,increment=0.5,textvariable=self.quick_save_var,width=10).grid(row=7,column=1,padx=8)
+        ttk.Button(frm,text="Apply checkpoint interval",command=self._apply_checkpoint_intervals).grid(row=7,column=2)
+
+        ttk.Label(frm,text="Full history checkpoint interval (seconds)").grid(row=8,column=0,sticky="w")
+        self.full_save_var=tk.DoubleVar(value=self.trainer.full_checkpoint_seconds)
+        ttk.Spinbox(frm,from_=2.0,to=300.0,increment=1.0,textvariable=self.full_save_var,width=10).grid(row=8,column=1,padx=8)
+
         self.cpu_status=ttk.Label(frm,text="CPU: measuring...")
-        self.cpu_status.grid(row=7,column=0,columnspan=3,pady=(14,4),sticky="w")
-        ttk.Label(frm,text="PLAYER CONTROL: OFF | TMNF game speed is untouched | adaptive scaling changes ghost count at generation boundaries.").grid(row=8,column=0,columnspan=3,pady=8,sticky="w")
+        self.cpu_status.grid(row=9,column=0,columnspan=3,pady=(14,4),sticky="w")
+        ttk.Label(frm,text="PLAYER CONTROL: OFF | TMNF game speed is untouched | checkpointing runs in the background.").grid(row=10,column=0,columnspan=3,pady=8,sticky="w")
+
+    def _apply_checkpoint_intervals(self):
+        try:
+            quick=float(self.quick_save_var.get())
+            full=float(self.full_save_var.get())
+            self.trainer.set_checkpoint_intervals(quick, full)
+        except (ValueError, tk.TclError):
+            messagebox.showerror("Checkpoint interval","Enter valid positive intervals.")
 
     def _apply_agent_count(self):
         try:
