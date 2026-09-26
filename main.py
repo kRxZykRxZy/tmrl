@@ -524,7 +524,27 @@ class Trainer(Client):
 
     def find_game_window(self):
         import ctypes
-        return ctypes.windll.user32.FindWindowW(None, "TrackMania Nations Forever")
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        found = []
+        proc_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def callback(hwnd, _):
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length <= 0:
+                return True
+            title = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, title, length + 1)
+            t = title.value.lower()
+            if "trackmania" in t and "forever" in t:
+                found.append(hwnd)
+                return False
+            return True
+
+        user32.EnumWindows(proc_type(callback), 0)
+        return found[0] if found else None
 
     def ui_snapshot(self):
         with self.lock:
