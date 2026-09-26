@@ -32,6 +32,13 @@ class StandaloneHUD:
   for label,dx,dy,d in (("F",0,-110,s.front),("L",-110,0,s.left),("R",110,0,s.right)):
    q=max(.08,min(1.,d));self.canvas.create_line(cx,cy,cx+dx*q,cy+dy*q,fill="red" if d<.15 else "lime",width=3)
    self.canvas.create_text(cx+dx*q,cy+dy*q,text=label,fill="white")
+  y0=225
+  self.canvas.create_text(14,y0,text="HIDDEN-2 ACTIVATIONS",anchor="nw",fill="white",font=("Consolas",11))
+  acts=list(s.activations)
+  for i,a in enumerate(acts):
+   x=150+(i%12)*34; yy=y0+18+(i//12)*18; mag=max(0.,min(1.,float(a)/4.))
+   self.canvas.create_rectangle(x,yy,x+26,yy+10,fill="lime" if a>0 else "#444",outline="")
+   self.canvas.create_text(x+13,yy,text=str(i),fill="white",font=("Consolas",7))
   self.root.after(50,self._render)
  def run(self):
   try:self.root.mainloop()
