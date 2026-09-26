@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 from tkinter import ttk, messagebox
 import tkinter as tk
+from ctypes import wintypes
 from PIL import ImageGrab, ImageTk
 
 class ControlCenter:
@@ -149,7 +150,7 @@ class ControlCenter:
         hwnd=self.trainer.find_game_window()
         if not hwnd:return
         try:
-            rect=ctypes.wintypes.RECT(); ctypes.windll.user32.GetWindowRect(hwnd,ctypes.byref(rect))
+            rect=wintypes.RECT(); ctypes.windll.user32.GetWindowRect(hwnd,ctypes.byref(rect))
             img=ImageGrab.grab(bbox=(rect.left,rect.top,rect.right,rect.bottom),all_screens=True)
             img.thumbnail((900,620))
             self.live_photo=ImageTk.PhotoImage(img.convert("RGB")); self.live_label.configure(image=self.live_photo,text="")
