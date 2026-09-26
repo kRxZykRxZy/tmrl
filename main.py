@@ -227,44 +227,66 @@ class Trainer(Client):
         else:
             commands = self._population_commands()
             steer_norm = float(np.clip(commands[agent_id, 0], -1.0, 1.0))
-            gas_norm = float(np.clip(commands[agent_id, 1], -1.0, 1.0))
+            raw_drive = float(np.clip(commands[agent_id, 1], -1.0, 1.0))
+            # The trainer never commands reverse. Positive output is throttle;
+            # negative output is braking.
+            gas_norm = max(0.0, raw_drive)
+            brake_norm = max(0.0, -raw_drive)
 
         self.iface.set_input_state(
             sim_clear_buffer=False,
             steer=int(steer_norm * 65536),
             gas=int(gas_norm * 65536),
-            accelerate=gas_norm > 0,
-            brake=gas_norm < 0,
+            accelerate=gas_norm > 0.02,
+            brake=brake_norm > 0.02,
         )
-        agent.record_action(steer_norm, gas_norm)
+        agent.record_action(steer_norm, gas_norm - brake_norm)
 
     def _is_bad_state(self, agent: AgentTelemetry) -> bool:
         y = float(agent.position[1])
-        x = abs(float(agent.position[0]))
-        z = abs(float(agent.position[2]))
+        speed = float(agent.speed_kmh)
+        forward_speed = float(getattr(agent, "forward_speed_kmh", 0.0))
 
-        if y < float(CFG.get("fall_y_min", -40.0)):
+        # Hard failure conditions: falling, leaving sane map bounds, or
+        # driving backwards. These are evaluated every physics callback.
+        if y < float(CFG.get("fall_y_min", -10.0)):
             return True
-        if x > float(CFG.get("map_abs_coordinate_limit", 5000.0)):
+
+        map_limit = float(CFG.get("map_abs_coordinate_limit", 5000.0))
+        if abs(float(agent.position[0])) > map_limit:
             return True
-        if z > float(CFG.get("map_abs_coordinate_limit", 5000.0)):
+        if abs(float(agent.position[2])) > map_limit:
             return True
+
+        if agent.samples >= 2 and forward_speed < -5.0:
+            if agent.negative_forward_since_ms < 0:
+                agent.negative_forward_since_ms = agent.race_time_ms
+            elif agent.race_time_ms - agent.negative_forward_since_ms >= 100:
+                return True
+        else:
+            agent.negative_forward_since_ms = -1
 
         if agent.samples < 2:
             return False
 
-        stuck_ms = int(CFG.get("stuck_timeout_ms", 1500))
+        stuck_ms = int(CFG.get("stuck_timeout_ms", 500))
         movement_eps = float(CFG.get("movement_epsilon", 0.05))
         speed_threshold = float(CFG.get("stuck_speed_kmh", 1.0))
         previous = np.asarray(getattr(agent, "_last_recovery_position", agent.position))
         moved = float(np.linalg.norm(agent.position - previous))
-        if moved > movement_eps or agent.speed_kmh > speed_threshold:
+        if moved > movement_eps or speed > speed_threshold:
             agent._last_recovery_position = agent.position.copy()
             agent._last_movement_ms = agent.race_time_ms
             return False
+
         last_movement = int(getattr(agent, "_last_movement_ms", agent.race_time_ms))
         return agent.race_time_ms - last_movement >= stuck_ms
 
+    def _deactivate_agent(self, agent_id: int, reason: str):
+        agent = self.telemetry.agents[agent_id]
+        agent.alive = False
+        agent.crashed = True
+        LOG.debug("agent %02d deactivated: %s", agent_id, reason)
     def _recover_agent(self, agent_id: int):
         blob = self.safe_states[agent_id] or self.states[agent_id] or self.generation_start_state
         if not blob or self.iface is None:
@@ -292,8 +314,8 @@ class Trainer(Client):
         for agent in self.telemetry.agents:
             results.append(
                 FitnessResult(
-                    fitness=self.engine.fitness(agent.max_distance, agent.average_speed, agent.wall_penalty),
-                    distance=agent.max_distance,
+                    fitness=self.engine.fitness(agent.forward_progress, agent.average_speed, agent.wall_penalty),
+                    distance=agent.forward_progress,
                     average_speed=agent.average_speed,
                     wall_penalty=agent.wall_penalty,
                     survived=agent.alive,
@@ -356,7 +378,11 @@ class Trainer(Client):
                     self._store_progress_state(agent_id, state)
     
                     if self._is_bad_state(agent):
-                        self._recover_agent(agent_id)
+                        self._deactivate_agent(agent_id, "fallen/backwards/stuck")
+                        self.current_agent = (agent_id + 1) % N
+                        self.slice_count = 0
+                        self.phase = "advance"
+                        return
     
                     if self.reset_requested:
                         self.reset_requested = False
@@ -396,8 +422,8 @@ class Trainer(Client):
                 self._store_progress_state(agent_id, state, blob)
     
                 if self._is_bad_state(agent):
-                    self._recover_agent(agent_id)
-                    self.current_agent = agent_id
+                    self._deactivate_agent(agent_id, "fallen/backwards/stuck")
+                    self.current_agent = (agent_id + 1) % N
                     self.slice_count = 0
                     self.phase = "advance"
                     return
@@ -568,8 +594,9 @@ class Trainer(Client):
                     "id": agent.agent_id,
                     "alive": agent.alive,
                     "speed": agent.speed_kmh,
-                    "distance": agent.max_distance,
-                    "fitness": self.engine.fitness(agent.max_distance, agent.average_speed, agent.wall_penalty),
+                    "forward_speed": agent.forward_speed_kmh,
+                    "distance": agent.forward_progress,
+                    "fitness": self.engine.fitness(agent.forward_progress, agent.average_speed, agent.wall_penalty),
                     "lap": agent.lap,
                     "lap_time": agent.latest_lap_time,
                     "avg": agent.average_speed,
