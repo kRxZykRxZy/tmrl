@@ -61,9 +61,7 @@ class ControlCenter:
 
     def _build_replay(self):
         """Build a lightweight replay tab compatible with the current detached trainer."""
-        frame = self.tabs.nametowidget(self.tabs.select()) if hasattr(self, "tabs") else None
-        self.replay_frame = tk.Frame(self.tabs, bg="#0d1117")
-        self.tabs.add(self.replay_frame, text="Replay")
+        self.replay_frame = tk.Frame(self.replay_tab, bg="#0d1117")
         tk.Label(
             self.replay_frame,
             text="Replay / training history",
@@ -82,8 +80,7 @@ class ControlCenter:
 
     def _build_race(self):
         """Build the race/training setup tab."""
-        self.race_frame = tk.Frame(self.tabs, bg="#0d1117")
-        self.tabs.add(self.race_frame, text="Race Setup")
+        self.race_frame = tk.Frame(self.race_tab, bg="#0d1117")
         tk.Label(
             self.race_frame,
             text="Race Setup",
@@ -102,8 +99,7 @@ class ControlCenter:
 
     def _build_settings(self):
         """Build trainer settings controls."""
-        self.settings_frame = tk.Frame(self.tabs, bg="#0d1117")
-        self.tabs.add(self.settings_frame, text="Settings")
+        self.settings_frame = tk.Frame(self.settings_tab, bg="#0d1117")
         tk.Label(
             self.settings_frame,
             text="Training Settings",
