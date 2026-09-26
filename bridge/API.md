@@ -164,3 +164,78 @@ The bridge does not expose a "current car" mutation API.
 NativeTmnfBackend should implement the same high-level lifecycle used by DetachedGhostBackend.
 
 Training code therefore consumes an abstract vehicle backend instead of knowing whether a vehicle is native or detached.
+
+
+## Vehicle and camera identity
+
+The bridge uses stable IDs:
+
+    player_car
+    player_camera
+
+AI agents are:
+
+    ai_thread_1
+    ai_thread_2
+    ai_thread_3
+    ...
+    ai_thread_N
+
+Every AI has its own camera:
+
+    ai_camera_1
+    ai_camera_2
+    ai_camera_3
+    ...
+    ai_camera_N
+
+The vehicle ID and camera ID are immutable for the lifetime of the logical
+agent slot. Native handles may be recycled, but the logical IDs remain stable.
+
+## Per-car camera
+
+Each AI owns a camera state containing:
+
+    camera_id
+    vehicle_id
+    mode
+    position
+    look_at
+    yaw
+    pitch
+    roll
+    fov_deg
+    distance
+    height
+    active
+    native_supported
+
+Supported modes are planned as:
+
+    chase
+    cockpit
+    hood
+    wheel
+    orbit
+
+The selected AI's camera is independent from every other AI camera.
+
+Selecting:
+
+    ai_thread_7
+
+targets:
+
+    ai_camera_7
+
+The player camera remains:
+
+    player_camera
+
+and is restored with:
+
+    release_camera_target()
+
+The native bridge must never replace the player's camera permanently just to
+observe an AI. Camera ownership is a view-state operation; AI control remains
+owned by the AI handle.
