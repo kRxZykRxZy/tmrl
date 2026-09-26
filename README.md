@@ -1,6 +1,6 @@
 # TMRL — TrackMania Nations Forever AI Ghost Trainer
 
-TMRL is a **50-agent evolutionary AI trainer** for TrackMania Nations Forever.
+TMRL is a **50-genome evolutionary AI trainer** for TrackMania Nations Forever. It launches **2 live ghost cars by default** and can be raised to 50 from Settings.
 
 ## Current runtime architecture
 
@@ -11,8 +11,9 @@ The trainer is deliberately **player-safe**:
 - TMRL never calls `rewind_to_state()`.
 - TMRL never calls `respawn()` for the player.
 - TMInterface is used only to read the player's world position/orientation.
-- The 50 AI agents run in a separate, real-time kinematic simulation.
-- A click-through Windows overlay renders the 50 agents as ghost-car silhouettes over the TMNF game window.
+- Up to 50 AI agents are available in the evolutionary population.
+- Only the configured live-ghost count is simulated/rendered. The default is 2.
+- A click-through Windows overlay renders the live agents as ghost-car silhouettes over the TMNF game window.
 - The TMNF game speed is not changed by TMRL.
 
 This is intentionally different from the previous save-state multiplexing design, which controlled the player's physical vehicle.
@@ -50,6 +51,9 @@ The current detached simulator is intentionally real-time and bounded so it cann
 
 The control centre shows:
 
+- live ghost count (default 2, configurable up to 50);
+- CPU usage;
+- optional adaptive CPU scaling with configurable target/min/max;
 - generation;
 - best and mean fitness;
 - 50-agent status wall;
@@ -107,3 +111,17 @@ TMRL therefore performs no checkpoint I/O, game-speed changes, input injection, 
 For true in-engine ghost entities rather than the overlay, the repository's next native layer should target the 32-bit TMNF runtime. Public TMNF modding projects demonstrate ASI/DLL plugin loading and runtime hooks, and TMNF exposes debug-symbol information through `TmForever.map`. citeturn654352view0turn654352view1
 
 Until that native layer is verified against the user's exact TMNF executable, TMRL does not claim that the overlay cars are native game entities.
+
+
+## Resource safety
+
+The default runtime is intentionally conservative after high-population testing caused excessive system load:
+
+- Default live ghosts: **2**
+- Maximum manual ghosts: **50**
+- Adaptive CPU scaling: **off by default**
+- Default adaptive CPU target: **65%**
+- Default adaptive range: **2–20 ghosts**
+- Scaling happens gradually in steps and applies at generation boundaries.
+
+For a low-power PC, leave the default 2 ghosts. Increase the live count manually only while monitoring CPU usage.
