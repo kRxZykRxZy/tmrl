@@ -59,6 +59,90 @@ class ControlCenter:
         self._build_dashboard(); self._build_agents(); self._build_camera()
         self._build_replay(); self._build_race(); self._build_settings()
 
+    def _build_replay(self):
+        """Build a lightweight replay tab compatible with the current detached trainer."""
+        frame = self.tabs.nametowidget(self.tabs.select()) if hasattr(self, "tabs") else None
+        self.replay_frame = tk.Frame(self.tabs, bg="#0d1117")
+        self.tabs.add(self.replay_frame, text="Replay")
+        tk.Label(
+            self.replay_frame,
+            text="Replay / training history",
+            bg="#0d1117",
+            fg="#e8edf2",
+            font=("Segoe UI", 16, "bold"),
+        ).pack(anchor="w", padx=18, pady=(18, 8))
+        self.replay_status = tk.Label(
+            self.replay_frame,
+            text="Replay data is generated from the detached AI simulation.",
+            bg="#0d1117",
+            fg="#9aa7b2",
+            font=("Segoe UI", 10),
+        )
+        self.replay_status.pack(anchor="w", padx=18)
+
+    def _build_race(self):
+        """Build the race/training setup tab."""
+        self.race_frame = tk.Frame(self.tabs, bg="#0d1117")
+        self.tabs.add(self.race_frame, text="Race Setup")
+        tk.Label(
+            self.race_frame,
+            text="Race Setup",
+            bg="#0d1117",
+            fg="#e8edf2",
+            font=("Segoe UI", 16, "bold"),
+        ).pack(anchor="w", padx=18, pady=(18, 12))
+        tk.Label(
+            self.race_frame,
+            text="AI ghosts train independently in the detached simulator. Your TMNF car is not controlled.",
+            bg="#0d1117",
+            fg="#9aa7b2",
+            wraplength=760,
+            justify="left",
+        ).pack(anchor="w", padx=18, pady=6)
+
+    def _build_settings(self):
+        """Build trainer settings controls."""
+        self.settings_frame = tk.Frame(self.tabs, bg="#0d1117")
+        self.tabs.add(self.settings_frame, text="Settings")
+        tk.Label(
+            self.settings_frame,
+            text="Training Settings",
+            bg="#0d1117",
+            fg="#e8edf2",
+            font=("Segoe UI", 16, "bold"),
+        ).pack(anchor="w", padx=18, pady=(18, 12))
+        tk.Label(
+            self.settings_frame,
+            text="Use the controls below to keep CPU usage safe while training.",
+            bg="#0d1117",
+            fg="#9aa7b2",
+        ).pack(anchor="w", padx=18, pady=4)
+
+        row = tk.Frame(self.settings_frame, bg="#0d1117")
+        row.pack(fill="x", padx=18, pady=12)
+        tk.Label(row, text="Ghost count", bg="#0d1117", fg="#e8edf2").pack(side="left")
+        self.agent_count_var = tk.IntVar(value=self.trainer.agent_count)
+        tk.Spinbox(
+            row,
+            from_=1,
+            to=int(self.trainer.max_agents),
+            textvariable=self.agent_count_var,
+            width=6,
+            command=lambda: self.trainer.set_agent_count(self.agent_count_var.get()),
+        ).pack(side="left", padx=10)
+
+        tk.Label(row, text="Simulator speed", bg="#0d1117", fg="#e8edf2").pack(side="left", padx=(24, 0))
+        self.speed_var = tk.DoubleVar(value=self.trainer.sim_speed)
+        tk.Spinbox(
+            row,
+            from_=0.1,
+            to=5.0,
+            increment=0.1,
+            textvariable=self.speed_var,
+            width=6,
+            command=lambda: self.trainer.set_sim_speed(self.speed_var.get()),
+        ).pack(side="left", padx=10)
+
     def _build_dashboard(self):
         left=ttk.Frame(self.dashboard,padding=12); left.pack(side="left",fill="both",expand=True)
         right=ttk.Frame(self.dashboard,padding=12); right.pack(side="right",fill="y")
