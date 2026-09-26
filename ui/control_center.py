@@ -22,6 +22,7 @@ class ControlCenter:
         self.replay_playing = False
         self.live_photo = None
         self.last_sweep = 0.0
+        self.last_capture = 0.0
         self._build()
         self.ghost_overlay = GhostOverlay(trainer)
         self.root.after(100, self.refresh)
@@ -103,8 +104,8 @@ class ControlCenter:
 
         self.count_var=tk.IntVar(value=self.trainer.agent_count)
         ttk.Label(frm,text="Live ghost cars").grid(row=0,column=0,sticky="w")
-        ttk.Spinbox(frm,from_=1,to=self.trainer.cpu_max_agents if self.trainer.cpu_max_agents else 50,
-                    increment=1,textvariable=self.count_var,width=10).grid(row=0,column=1,padx=8)
+        ttk.Spinbox(frm,from_=1,to=50,increment=1,
+                    textvariable=self.count_var,width=10).grid(row=0,column=1,padx=8)
         ttk.Button(frm,text="Apply ghost count",command=self._apply_agent_count).grid(row=0,column=2)
 
         self.speed_var=tk.DoubleVar(value=self.trainer.sim_speed)
@@ -207,6 +208,11 @@ class ControlCenter:
         except ValueError:messagebox.showerror("Speed","Enter a number.")
 
     def _capture_game(self):
+        now=time.monotonic()
+        if now - self.last_capture < 1.0:
+            return
+        self.last_capture = now
+
         hwnd=self.trainer.find_game_window()
         if not hwnd:
             self.live_label.configure(image="", text="TMNF live camera — game window not found")
