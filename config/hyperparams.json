@@ -1,0 +1,24 @@
+{
+  "population_size": 50,
+  "elite_count": 5,
+  "input_size": 8,
+  "hidden_sizes": [32, 24],
+  "output_size": 2,
+  "mutation_rate": 0.15,
+  "mutation_sigma": 0.15,
+  "selection": "roulette_wheel",
+  "generation_timeout_seconds": 20.0,
+  "elimination_grace_seconds": 1.5,
+  "elimination_speed_kmh": 1.0,
+  "server_host": "127.0.0.1",
+  "server_port": 8765,
+  "frame_rate_hz": 60,
+  "lidar_max_distance": 100.0,
+  "lidar_danger_distance": 3.0,
+  "fitness": {
+    "distance_weight": 1.5,
+    "speed_weight": 0.5,
+    "wall_penalty_weight": 1.0
+  },
+  "random_seed": null
+}
