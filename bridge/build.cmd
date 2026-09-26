@@ -17,17 +17,31 @@ if not errorlevel 1 goto :build_vs
 where gcc >nul 2>nul
 if not errorlevel 1 goto :build_gcc
 
+where g++ >nul 2>nul
+if not errorlevel 1 goto :build_gcc
+
 echo No C/C++ compiler was found in PATH.
 echo.
-echo For the 32-bit TMNF bridge, use one of:
-echo   1. A Visual Studio Developer Command Prompt with 32-bit tools
-echo   2. A MinGW 32-bit toolchain
-echo.
-echo Do not use a 64-bit-only compiler for the final TMNF DLL.
+echo For the 32-bit TMNF bridge, use a 32-bit Visual Studio toolchain
+echo or a 32-bit MinGW toolchain.
 exit /b 1
 
+:clean_build_dir
+if exist build-native (
+  echo Removing previous CMake build directory...
+  rmdir /s /q build-native
+  if exist build-native (
+    echo Failed to remove build-native.
+    echo Close any program using files in that directory and retry.
+    exit /b 1
+  )
+)
+exit /b 0
+
 :build_vs
-if not exist build-native rmdir /s /q build-native 2>nul
+call :clean_build_dir
+if errorlevel 1 goto :fail
+
 echo [1/2] Configuring with Visual Studio 32-bit generator...
 cmake -S native -B build-native -G "Visual Studio 17 2022" -A Win32
 if errorlevel 1 goto :fail
@@ -38,7 +52,9 @@ if errorlevel 1 goto :fail
 goto :success
 
 :build_gcc
-if not exist build-native rmdir /s /q build-native 2>nul
+call :clean_build_dir
+if errorlevel 1 goto :fail
+
 echo [1/2] Configuring with MinGW...
 cmake -S native -B build-native -G "MinGW Makefiles"
 if errorlevel 1 goto :fail
