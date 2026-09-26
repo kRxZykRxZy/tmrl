@@ -276,11 +276,11 @@ class Trainer(Client):
         agent.crashed = False
         agent.lidar.fill(1.0)
 
-    def _store_progress_state(self, agent_id: int, state):
+    def _store_progress_state(self, agent_id: int, state, blob: bytes | None = None):
         agent = self.telemetry.agents[agent_id]
         min_progress = float(CFG.get("safe_state_distance", 2.0))
         if agent.max_distance - getattr(agent, "_last_safe_distance", -1.0) >= min_progress:
-            self.safe_states[agent_id] = serialize_state(state)
+            self.safe_states[agent_id] = blob if blob is not None else serialize_state(state)
             agent._last_safe_distance = agent.max_distance
 
     def _evolve_generation(self):
@@ -377,8 +377,8 @@ class Trainer(Client):
                 blob = serialize_state(state)
                 self.telemetry.update(agent_id, state, blob)
                 self.training_ticks += 1
-                self.states[agent_id] = serialize_state(state)
-                self._store_progress_state(agent_id, state)
+                self.states[agent_id] = blob
+                self._store_progress_state(agent_id, state, blob)
     
                 if self._is_bad_state(agent):
                     self._recover_agent(agent_id)
