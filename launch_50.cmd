@@ -1,24 +1,34 @@
 @echo off
 setlocal EnableExtensions
 
-rem TMRL 50-instance launcher.
-rem Use:
-rem   launch_50.cmd "C:\Path\To\TMInterface.exe"
+rem TMRL 50-instance launcher for TMInterface 1.4.3.
 rem
-rem The /D working-directory flag is important: TMInterface needs to find
-rem its companion TmForever.exe relative to its installation directory.
+rem Usage:
+rem   launch_50.cmd "C:\Path\To\TMInterface.exe" "C:\Path\To\TrackMania Nations Forever"
+rem
+rem Example Steam:
+rem   launch_50.cmd "C:\TMInterface\TMInterface.exe" "C:\Program Files (x86)\Steam\steamapps\common\TrackMania Nations Forever"
+rem
+rem TMInterface.exe and TmForever.exe do NOT have to be in the same directory.
 
 if not "%~1"=="" set "TMI_EXE=%~1"
+if not "%~2"=="" set "GAME_DIR=%~2"
 
 if not defined TMI_EXE (
-  echo TMI_EXE is not set.
+  echo Missing TMInterface.exe path.
   echo.
   echo Example:
-  echo   launch_50.cmd "C:\TMInterface\TMInterface.exe"
+  echo   launch_50.cmd "C:\TMInterface\TMInterface.exe" "C:\Program Files (x86)\Steam\steamapps\common\TrackMania Nations Forever"
+  exit /b 2
+)
+
+if not defined GAME_DIR (
+  echo Missing TrackMania Nations Forever directory.
   echo.
-  echo Or:
-  echo   set "TMI_EXE=C:\TMInterface\TMInterface.exe"
-  echo   launch_50.cmd
+  echo Find it in Steam:
+  echo   Library ^> TrackMania Nations Forever ^> Properties ^> Installed Files ^> Browse
+  echo.
+  echo Then pass the folder containing TmForever.exe as the second argument.
   exit /b 2
 )
 
@@ -28,26 +38,19 @@ if not exist "%TMI_EXE%" (
   exit /b 3
 )
 
-for %%I in ("%TMI_EXE%") do set "TMI_DIR=%%~dpI"
-
-if not exist "%TMI_DIR%TmForever.exe" (
+if not exist "%GAME_DIR%\TmForever.exe" (
+  echo TmForever.exe not found:
+  echo   "%GAME_DIR%\TmForever.exe"
   echo.
-  echo ERROR: TmForever.exe was not found beside TMInterface.exe.
-  echo.
-  echo TMInterface directory:
-  echo   "%TMI_DIR%"
-  echo.
-  echo Expected:
-  echo   "%TMI_DIR%TmForever.exe"
-  echo.
-  echo Install the compatible TMInterface/TMNF package correctly, then retry.
+  echo Steam TMNF normally installs the game executable as TmForever.exe.
   exit /b 4
 )
 
 echo TMInterface:
 echo   "%TMI_EXE%"
-echo Game:
-echo   "%TMI_DIR%TmForever.exe"
+echo.
+echo TrackMania:
+echo   "%GAME_DIR%\TmForever.exe"
 echo.
 echo Launching 50 instances...
 echo.
@@ -56,14 +59,12 @@ for /L %%N in (0,1,49) do call :launch_one %%N
 
 echo.
 echo Finished sending 50 launch requests.
-echo.
-echo Verify that the instances expose:
+echo Verify the instances expose:
 echo   TMInterface0 ... TMInterface49
-echo.
 exit /b 0
 
 :launch_one
 echo [%%1] starting
-start "" /D "%TMI_DIR%" "%TMI_EXE%"
+start "" /D "%GAME_DIR%" "%TMI_EXE%"
 timeout /t 1 /nobreak >nul
 exit /b 0
