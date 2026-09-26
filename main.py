@@ -105,6 +105,9 @@ class Trainer(Client):
         self.slice_ticks = max(1, int(CFG.get('ticks_per_slice', 5)))
         self.slice_count = 0
         self.lock = threading.RLock()
+        self.autosave_stop = threading.Event()
+        self.autosave_thread = threading.Thread(target=self._autosave_loop, name="tmrl-autosave", daemon=True)
+        self.autosave_thread.start()
 
     # ---------- lifecycle ----------
 
@@ -184,12 +187,13 @@ class Trainer(Client):
             self.executor.submit(self.checkpoints.save_agent, agent, genome)
         self.checkpoints.manifest(generation, map_name)
 
-    def _autosave(self):
-        now = time.monotonic()
-        if now - self.last_autosave < float(CFG.get("autosave_seconds", 5.0)):
-            return
-        self.last_autosave = now
-        self.save_now()
+    def _autosave_loop(self):
+        interval = max(1.0, float(CFG.get("autosave_seconds", 10.0)))
+        while not self.autosave_stop.wait(interval):
+            try:
+                self.save_now()
+            except Exception:
+                LOG.exception("background autosave failed")
 
     # ---------- simulation ----------
 
@@ -578,6 +582,7 @@ class Trainer(Client):
             self.save_now()
         finally:
             self.running = False
+        self.autosave_stop.set()
             self.executor.shutdown(wait=False, cancel_futures=True)
 
     def stop(self):
