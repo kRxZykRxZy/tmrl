@@ -126,6 +126,11 @@ class Trainer(Client):
         self.simulator.set_active_count(self.agent_count)
 
         self.camera_sweep = False
+        self.per_car_cameras = bool(CFG.get("per_car_cameras", True))
+        self.camera_mode = str(CFG.get("camera_mode", "chase"))
+        self.camera_fov_deg = float(CFG.get("camera_fov_deg", 90.0))
+        self.camera_distance_m = float(CFG.get("camera_distance_m", 6.0))
+        self.camera_height_m = float(CFG.get("camera_height_m", 2.0))
 
         self.autosave_stop = threading.Event()
         try:
@@ -456,6 +461,9 @@ class Trainer(Client):
             self.cpu_max_agents = self.cpu_min_agents
         self.pending_agent_count = max(self.pending_agent_count, self.cpu_min_agents)
 
+    def set_cpu_scale_step(self, step):
+        self.cpu_scale_step = max(1, min(10, int(step)))
+
     def set_cpu_max_agents(self, count):
         self.cpu_max_agents = max(self.cpu_min_agents, min(MAX_AGENTS, int(count)))
         self.pending_agent_count = min(self.pending_agent_count, self.cpu_max_agents)
@@ -634,7 +642,11 @@ class Trainer(Client):
                 "ghost_render": "ON",
                 "player_vehicle_id": PLAYER_VEHICLE_ID,
                 "player_camera_id": PLAYER_CAMERA_ID,
-                "camera_mode": "native_per_vehicle_pending",
+                "camera_mode": self.camera_mode,
+                "per_car_cameras": self.per_car_cameras,
+                "camera_fov_deg": self.camera_fov_deg,
+                "camera_distance_m": self.camera_distance_m,
+                "camera_height_m": self.camera_height_m,
             }
 
     def save_and_stop(self):
