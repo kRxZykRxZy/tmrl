@@ -625,7 +625,11 @@ class Trainer(Client):
 
     def save_and_stop(self):
         try:
+            # Guarantee a small recovery checkpoint exists before shutdown.
+            self.save_quick_checkpoint()
             self.save_now()
+        except Exception:
+            LOG.exception("final checkpoint failed")
         finally:
             self.running = False
             self.autosave_stop.set()
