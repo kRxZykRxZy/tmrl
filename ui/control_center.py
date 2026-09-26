@@ -34,7 +34,7 @@ class ControlCenter:
         top = ttk.Frame(self.root, padding=8); top.pack(fill="x")
         self.generation = ttk.Label(top, text="Generation 0", font=("Segoe UI", 15, "bold")); self.generation.pack(side="left", padx=(0,20))
         self.best = ttk.Label(top, text="Best 0.00"); self.best.pack(side="left", padx=8)
-        self.active = ttk.Label(top, text="Active 50/50"); self.active.pack(side="left", padx=8)
+        self.active = ttk.Label(top, text="Ghosts 2/2"); self.active.pack(side="left", padx=8)
         self.phase = ttk.Label(top, text="TRAINING"); self.phase.pack(side="left", padx=8)
         buttons = ttk.Frame(top); buttons.pack(side="right")
         for text, cmd in [
@@ -100,15 +100,68 @@ class ControlCenter:
 
     def _build_settings(self):
         frm=ttk.Frame(self.settings_tab,padding=16); frm.pack(anchor="nw")
+
+        self.count_var=tk.IntVar(value=self.trainer.agent_count)
+        ttk.Label(frm,text="Live ghost cars").grid(row=0,column=0,sticky="w")
+        ttk.Spinbox(frm,from_=1,to=self.trainer.cpu_max_agents if self.trainer.cpu_max_agents else 50,
+                    increment=1,textvariable=self.count_var,width=10).grid(row=0,column=1,padx=8)
+        ttk.Button(frm,text="Apply ghost count",command=self._apply_agent_count).grid(row=0,column=2)
+
         self.speed_var=tk.DoubleVar(value=self.trainer.sim_speed)
-        ttk.Label(frm,text="Detached ghost training speed").grid(row=0,column=0,sticky="w")
-        ttk.Spinbox(frm,from_=0.25,to=100.0,increment=0.25,textvariable=self.speed_var,width=10).grid(row=0,column=1,padx=8)
-        ttk.Button(frm,text="Apply speed",command=self._apply_speed).grid(row=0,column=2)
+        ttk.Label(frm,text="Detached ghost training speed").grid(row=1,column=0,sticky="w")
+        ttk.Spinbox(frm,from_=0.25,to=2.0,increment=0.05,textvariable=self.speed_var,width=10).grid(row=1,column=1,padx=8)
+        ttk.Button(frm,text="Apply speed",command=self._apply_speed).grid(row=1,column=2)
+
+        self.adaptive_var=tk.BooleanVar(value=self.trainer.adaptive_cpu)
+        ttk.Checkbutton(frm,text="Adaptive CPU scaling",variable=self.adaptive_var,
+                        command=self._apply_adaptive).grid(row=2,column=0,columnspan=2,sticky="w",pady=(10,0))
+
+        self.cpu_target_var=tk.DoubleVar(value=self.trainer.cpu_target)
+        ttk.Label(frm,text="CPU target %").grid(row=3,column=0,sticky="w")
+        ttk.Spinbox(frm,from_=20,to=95,increment=5,textvariable=self.cpu_target_var,width=10).grid(row=3,column=1,padx=8)
+        ttk.Button(frm,text="Apply CPU target",command=self._apply_cpu_target).grid(row=3,column=2)
+
+        self.cpu_min_var=tk.IntVar(value=self.trainer.cpu_min_agents)
+        self.cpu_max_var=tk.IntVar(value=self.trainer.cpu_max_agents)
+        ttk.Label(frm,text="Adaptive minimum ghosts").grid(row=4,column=0,sticky="w")
+        ttk.Spinbox(frm,from_=1,to=50,increment=1,textvariable=self.cpu_min_var,width=10).grid(row=4,column=1,padx=8)
+        ttk.Label(frm,text="Adaptive maximum ghosts").grid(row=5,column=0,sticky="w")
+        ttk.Spinbox(frm,from_=1,to=50,increment=1,textvariable=self.cpu_max_var,width=10).grid(row=5,column=1,padx=8)
+        ttk.Button(frm,text="Apply CPU range",command=self._apply_cpu_range).grid(row=5,column=2)
+
         self.threads_var=tk.IntVar(value=self.trainer.worker_threads)
-        ttk.Label(frm,text="Background checkpoint threads").grid(row=1,column=0,sticky="w")
-        ttk.Spinbox(frm,from_=1,to=16,textvariable=self.threads_var,width=10).grid(row=1,column=1,padx=8)
-        ttk.Button(frm,text="Apply threads",command=lambda:self.trainer.set_worker_threads(int(self.threads_var.get()))).grid(row=1,column=2)
-        ttk.Label(frm,text="PLAYER CONTROL: OFF    |    GHOSTS: 50 detached real-time agents    |    TMNF game speed is untouched").grid(row=2,column=0,columnspan=3,pady=20,sticky="w")
+        ttk.Label(frm,text="Background checkpoint threads").grid(row=6,column=0,sticky="w")
+        ttk.Spinbox(frm,from_=1,to=16,textvariable=self.threads_var,width=10).grid(row=6,column=1,padx=8)
+        ttk.Button(frm,text="Apply threads",command=lambda:self.trainer.set_worker_threads(int(self.threads_var.get()))).grid(row=6,column=2)
+
+        self.cpu_status=ttk.Label(frm,text="CPU: measuring...")
+        self.cpu_status.grid(row=7,column=0,columnspan=3,pady=(14,4),sticky="w")
+        ttk.Label(frm,text="PLAYER CONTROL: OFF | TMNF game speed is untouched | adaptive scaling changes ghost count at generation boundaries.").grid(row=8,column=0,columnspan=3,pady=8,sticky="w")
+
+    def _apply_agent_count(self):
+        try:
+            count=int(self.count_var.get())
+            self.trainer.set_agent_count(count)
+        except (ValueError, tk.TclError):
+            messagebox.showerror("Ghost count","Enter a whole number from 1 to 50.")
+
+    def _apply_adaptive(self):
+        self.trainer.set_adaptive_cpu(bool(self.adaptive_var.get()))
+
+    def _apply_cpu_target(self):
+        try:
+            self.trainer.set_cpu_target(float(self.cpu_target_var.get()))
+        except (ValueError, tk.TclError):
+            messagebox.showerror("CPU target","Enter a percentage from 20 to 95.")
+
+    def _apply_cpu_range(self):
+        try:
+            low=int(self.cpu_min_var.get())
+            high=int(self.cpu_max_var.get())
+            self.trainer.set_cpu_min_agents(low)
+            self.trainer.set_cpu_max_agents(high)
+        except (ValueError, tk.TclError):
+            messagebox.showerror("CPU range","Enter whole numbers from 1 to 50.")
 
     def _select_agent(self,_=None):
         sel=self.tree.selection()
@@ -184,12 +237,15 @@ class ControlCenter:
 
     def refresh(self):
         try:
-            s=self.trainer.ui_snapshot(); self.generation.config(text=f"Generation {s['generation']}"); self.best.config(text=f"Best {s['best']:.2f}"); self.active.config(text=f"Active {s['active']}/50"); self.phase.config(text=s["phase"])
+            s=self.trainer.ui_snapshot(); self.generation.config(text=f"Generation {s['generation']}"); self.best.config(text=f"Best {s['best']:.2f}"); self.active.config(text=f"Ghosts {s['active']}/{s['agent_count']}"); self.phase.config(text=s["phase"])
             a=s["focused"]; self.focus_label.config(text=f"Focused agent: {a['id']}")
             for key in ("speed","distance","fitness","avg","lap","wall","front","left","right"):
                 val=a[key]; getattr(self,key+"_label").config(text=f"{key}: {val:.2f}" if isinstance(val,float) else f"{key}: {val}")
             self.stats.delete("1.0","end"); self.stats.insert("end",f"Generation: {s['generation']}\nBest fitness: {s['best']:.3f}\nMean fitness: {s['mean']:.3f}\nActive: {s['active']}/50\nTraining ticks: {s.get('ticks',0)}\nGame speed: {s['speed_factor']}x\nMap: {self.trainer.map_name}\nLast error: {s.get('last_error','')}\nFocused command: steer={a['steer']:+.3f}, gas={a['gas']:+.3f}\nLap: {a['lap']}  Lap time: {a['lap_time']:.3f}s\nCheckpoints: {a['checkpoints']}\n")
             self._draw_wall(s); self._draw_replay(); self._capture_game()
+            cpu=s.get('cpu_usage')
+            if hasattr(self,'cpu_status'):
+                self.cpu_status.config(text=f"CPU: {cpu:.1f}%  |  ghosts: {s['agent_count']}  |  adaptive: {'ON' if s.get('adaptive_cpu') else 'OFF'}" if cpu is not None else "CPU: measuring...")
         except Exception as exc:
             try:
                 self.trainer.last_error = f"UI: {type(exc).__name__}: {exc}"
