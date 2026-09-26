@@ -31,7 +31,7 @@ The Python TMInterface API controls one TMInterface server/client at a time, whi
 
 Those 50 TMNF/TMInterface instances must be running concurrently for 50 visible cars. This is the TMInterface-compatible equivalent of a simultaneous population; it is not a claim that one TMNF process contains 50 physical player vehicles.
 
-TMInterface exposes physics-step callbacks and state fields including position, velocity and yaw/pitch/roll, and supports analog steering/gas input injection. The trainer keeps every instance at speed 1.0. citeturn3view0turn4view0
+TMInterface exposes physics-step callbacks and state fields including position, velocity and yaw/pitch/roll, and supports analog steering/gas input injection. The trainer keeps every instance at speed 1.0.
 
 ## Install
 
@@ -41,7 +41,7 @@ The original Python client is legacy and is documented for TMInterface versions 
 python -m pip install -r requirements.txt
 ```
 
-The game installation must therefore provide compatible TMInterface server instances. Current TMInterface releases use a newer plugin API, so do not mix the legacy Python client with an incompatible server build. citeturn2search1turn5search0
+The game installation must therefore provide compatible TMInterface server instances. Current TMInterface releases use a newer plugin API, so do not mix the legacy Python client with an incompatible server build.
 
 ## Run
 
@@ -94,4 +94,4 @@ The existing lateral-contact state can be used for the wall penalty. For genuine
 
 ## TAS warning
 
-TMInterface is a tool-assisted environment. Runs produced with TMInterface should not be submitted as legitimate leaderboard runs. citeturn5search1
+TMInterface is a tool-assisted environment. Runs produced with TMInterface should not be submitted as legitimate leaderboard runs.
