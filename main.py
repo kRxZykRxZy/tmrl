@@ -42,7 +42,7 @@ def serialize_state(state: SimStateData) -> bytes:
     return bytes(state.data)
 
 
-def decode_state(blob: bytes):
+def deserialize_state(blob: bytes):
     if not blob:
         return None
     try:
@@ -98,7 +98,11 @@ class Trainer(Client):
         self.replay_agent = 0
         self.replay_index = 0
         self.replay_active = False
-        self.camera_request = 0
+        self.camera_request = None
+        self.camera_sweep = False
+        self.reset_requested = False
+        self.slice_ticks = max(1, int(CFG.get('ticks_per_slice', 5)))
+        self.slice_count = 0
         self.lock = threading.RLock()
 
     # ---------- lifecycle ----------
@@ -344,7 +348,7 @@ class Trainer(Client):
                     self._evolve_generation()
                     base = self.generation_start_state
                     if base is not None:
-                        self.iface.rewind_to_state(clone_state(base))
+                        self.iface.rewind_to_state(deserialize_state(base))
                     self.phase = "advance"
                     self._autosave()
                     return
@@ -359,12 +363,12 @@ class Trainer(Client):
 
                 # Advance this logical car with a new action on this callback.
                 self._issue_action(agent_id)
+                self.slice_count = 1
                 self.phase = "post"
                 return
 
             # The previous callback injected the current agent's command. We now
-            # retain the resulting state, then rewind the single game to the next
-            # logical agent. rewind_to_state() immediately simulates its next step.
+            # Retain state. Run several physics ticks before switching trajectories.
             blob = serialize_state(state)
             self.telemetry.update(agent_id, state, blob)
             self.training_ticks += 1
@@ -374,6 +378,7 @@ class Trainer(Client):
             if self._is_bad_state(agent):
                 self._recover_agent(agent_id)
                 self.current_agent = agent_id
+                self.slice_count = 0
                 self.phase = "advance"
                 return
 
@@ -394,6 +399,12 @@ class Trainer(Client):
                 self.phase = "advance"
                 return
 
+            if self.slice_count < self.slice_ticks and self.camera_request is None:
+                self.slice_count += 1
+                self._issue_action(agent_id)
+                self.phase = "post"
+                return
+
             if self.single_agent_mode:
                 next_agent = self.focus
             else:
@@ -409,7 +420,10 @@ class Trainer(Client):
             next_state = self.states[next_agent] or self.generation_start_state
             if next_state is not None:
                 self.current_agent = next_agent
-                self.iface.rewind_to_state(deserialize_state(next_state))
+                restored = deserialize_state(next_state)
+                if restored is not None:
+                    self.iface.rewind_to_state(restored)
+                self.slice_count = 0
                 self.phase = "advance"
 
     # ---------- UI / controls ----------
@@ -470,6 +484,10 @@ class Trainer(Client):
                 self.states[self.replay_agent] = self.generation_start_state
                 self.safe_states[self.replay_agent] = self.generation_start_state
                 self.telemetry.agents[self.replay_agent].reset(keep_history=True)
+
+    def toggle_camera_sweep(self):
+        with self.lock:
+            self.camera_sweep = not self.camera_sweep
 
     def toggle_camera_sweep(self):
         with self.lock:
