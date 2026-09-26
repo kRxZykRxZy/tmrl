@@ -342,9 +342,6 @@ class ControlCenter:
         self.wall_last_capture = now
 
         frame = self._capture_tm_gameplay()
-        if frame is None:
-            self.wall_status.config(text="TMNF window not found / capture unavailable")
-            return
 
         # Resize the real game frame once, then reuse it for all AI tiles.
         tile_w, tile_h = 324, 182
