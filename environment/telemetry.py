@@ -9,6 +9,8 @@ HISTORY_LIMIT = 6000
 @dataclass
 class AgentTelemetry:
     agent_id: int
+    vehicle_id: str = ""
+    camera_id: str = ""
     position: np.ndarray = field(default_factory=lambda: np.zeros(3, np.float64))
     velocity: np.ndarray = field(default_factory=lambda: np.zeros(3, np.float64))
     yaw_pitch_roll: np.ndarray = field(default_factory=lambda: np.zeros(3, np.float64))
@@ -39,6 +41,12 @@ class AgentTelemetry:
     history_speed: list[float] = field(default_factory=list)
     history_steer: list[float] = field(default_factory=list)
     history_gas: list[float] = field(default_factory=list)
+
+    def __post_init__(self):
+        if not self.vehicle_id:
+            self.vehicle_id = f"ai_thread_{self.agent_id + 1}"
+        if not self.camera_id:
+            self.camera_id = f"ai_camera_{self.agent_id + 1}"
 
     @property
     def speed_mps(self): return float(np.linalg.norm(self.velocity))
