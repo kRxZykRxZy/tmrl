@@ -109,7 +109,7 @@ class Trainer(Client):
 
     def on_registered(self, iface):
         self.iface = iface
-        iface.set_timeout(int(CFG.get("tmi_timeout_ms", 5000)))
+        iface.set_timeout(int(CFG.get("tmi_timeout_ms", 15000)))
         iface.set_speed(self.game_speed)
         LOG.info("connected to ONE TMInterface instance")
         LOG.info("50 logical cars will be multiplexed through this process")
@@ -372,7 +372,7 @@ class Trainer(Client):
             blob = serialize_state(state)
             self.telemetry.update(agent_id, state, blob)
             self.training_ticks += 1
-            self.states[agent_id] = clone_state(state)
+            self.states[agent_id] = serialize_state(state)
             self._store_progress_state(agent_id, state)
 
             if self._is_bad_state(agent):
@@ -387,7 +387,9 @@ class Trainer(Client):
                 self._reset_all_states()
                 base = self.generation_start_state
                 if base is not None:
-                    self.iface.rewind_to_state(clone_state(base))
+                    restored = deserialize_state(base)
+                    if restored is not None:
+                        self.iface.rewind_to_state(restored)
                 self.phase = "advance"
                 return
 
@@ -395,7 +397,9 @@ class Trainer(Client):
                 self._evolve_generation()
                 base = self.generation_start_state
                 if base is not None:
-                    self.iface.rewind_to_state(clone_state(base))
+                    restored = deserialize_state(base)
+                    if restored is not None:
+                        self.iface.rewind_to_state(restored)
                 self.phase = "advance"
                 return
 
@@ -484,10 +488,6 @@ class Trainer(Client):
                 self.states[self.replay_agent] = self.generation_start_state
                 self.safe_states[self.replay_agent] = self.generation_start_state
                 self.telemetry.agents[self.replay_agent].reset(keep_history=True)
-
-    def toggle_camera_sweep(self):
-        with self.lock:
-            self.camera_sweep = not self.camera_sweep
 
     def toggle_camera_sweep(self):
         with self.lock:
