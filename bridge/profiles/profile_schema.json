@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TMRL TMNF Native Build Profile",
+  "type": "object",
+  "required": [
+    "build_id",
+    "exe_sha256",
+    "pointer_size",
+    "supported"
+  ],
+  "properties": {
+    "build_id": {"type": "string"},
+    "exe_sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+    "pointer_size": {"type": "integer", "enum": [4]},
+    "supported": {"type": "boolean"},
+    "game_tick": {"type": ["integer", "null"]},
+    "create_by_mw_class_id": {"type": ["integer", "null"]},
+    "scene_vehicle_car_class_id": {"type": ["integer", "null"]},
+    "scene_mobil_class_id": {"type": ["integer", "null"]},
+    "update_vehicle_state_from_inputs": {"type": ["integer", "null"]},
+    "update_vehicle_state_from_inputs_impl": {"type": ["integer", "null"]},
+    "unregister_player": {"type": ["integer", "null"]},
+    "camera": {
+      "type": "object",
+      "properties": {
+        "supported": {"type": "boolean"},
+        "target_function": {"type": ["integer", "null"]},
+        "restore_function": {"type": ["integer", "null"]}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
