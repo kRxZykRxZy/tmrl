@@ -414,6 +414,36 @@ class ControlCenter:
 
         return tile_image
 
+    def _refresh_agent_tree(self, agents):
+        if not hasattr(self, "tree"):
+            return
+        existing = {item: self.tree.item(item, "values") for item in self.tree.get_children()}
+        by_id = {int(values[0]): item for item, values in existing.items() if values}
+        for agent in agents:
+            values = (
+                agent["id"],
+                agent.get("vehicle_id", f"ai_thread_{int(agent['id']) + 1}"),
+                "YES" if agent["alive"] else "NO",
+                f"{agent['speed']:.1f}",
+                f"{agent['distance']:.2f}",
+                f"{agent['fitness']:.2f}",
+                agent["lap"],
+                f"{agent['lap_time']:.3f}",
+                f"{agent['avg']:.1f}",
+                f"{agent['wall']:.2f}",
+            )
+            item = by_id.get(int(agent["id"]))
+            if item is None:
+                self.tree.insert("", "end", values=values, iid=f"agent_{agent['id']}")
+            else:
+                self.tree.item(item, values=values)
+
+        wanted = {int(agent["id"]) for agent in agents}
+        for item in list(self.tree.get_children()):
+            values = self.tree.item(item, "values")
+            if values and int(values[0]) not in wanted:
+                self.tree.delete(item)
+
     def _refresh_ghost_camera(self, snapshot):
         if not hasattr(self, "wall_inner"):
             return
@@ -604,10 +634,19 @@ class ControlCenter:
         try:
             s=self.trainer.ui_snapshot(); self.generation.config(text=f"Generation {s['generation']}"); self.best.config(text=f"Best {s['best']:.2f}"); self.active.config(text=f"Ghosts {s['active']}/{s['agent_count']}"); self.phase.config(text=s["phase"])
             a=s["focused"]; self.focus_label.config(text=f"Focused: {a.get('vehicle_id', 'ai_thread_1')}")
+            self._refresh_agent_tree(s["agents"])
             for key in ("speed","distance","fitness","avg","lap","wall","front","left","right"):
                 val=a[key]; getattr(self,key+"_label").config(text=f"{key}: {val:.2f}" if isinstance(val,float) else f"{key}: {val}")
             self.stats.delete("1.0","end"); self.stats.insert("end",f"Generation: {s['generation']}\nBest fitness: {s['best']:.3f}\nMean fitness: {s['mean']:.3f}\nActive: {s['active']}/50\nTraining ticks: {s.get('ticks',0)}\nGame speed: {s['speed_factor']}x\nMap: {self.trainer.map_name}\nLast error: {s.get('last_error','')}\nFocused command: steer={a['steer']:+.3f}, gas={a['gas']:+.3f}\nLap: {a['lap']}  Lap time: {a['lap_time']:.3f}s\nCheckpoints: {a['checkpoints']}\n")
             self._refresh_ghost_camera(s); self._draw_replay()
+            if hasattr(self, "agent_count_var"):
+                self.agent_count_var.set(int(s["agent_count"]))
+            if hasattr(self, "min_agents_var"):
+                self.min_agents_var.set(int(s.get("cpu_min_agents", self.trainer.cpu_min_agents)))
+            if hasattr(self, "max_agents_var"):
+                self.max_agents_var.set(int(s.get("cpu_max_agents", self.trainer.cpu_max_agents)))
+            if hasattr(self, "adaptive_var"):
+                self.adaptive_var.set(bool(s.get("adaptive_cpu", self.trainer.adaptive_cpu)))
             cpu=s.get('cpu_usage')
             if hasattr(self,'cpu_status'):
                 self.cpu_status.config(text=f"CPU: {cpu:.1f}%  |  ghosts: {s['agent_count']}  |  adaptive: {'ON' if s.get('adaptive_cpu') else 'OFF'}" if cpu is not None else "CPU: measuring...")
