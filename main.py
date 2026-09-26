@@ -83,6 +83,11 @@ class Trainer(Client):
         # This factor only affects the detached simulator. It never changes
         # TMNF's speed or input handling.
         self.sim_speed = 1.0
+        self.quick_checkpoint_seconds = max(0.5, float(CFG.get("quick_checkpoint_seconds", 2.0)))
+        self.full_checkpoint_seconds = max(
+            self.quick_checkpoint_seconds,
+            float(CFG.get("full_checkpoint_seconds", 30.0)),
+        )
 
         self.generation_started = time.monotonic()
         self.training_ticks = 0
@@ -499,6 +504,17 @@ class Trainer(Client):
         # This is now the detached ghost simulator speed. The actual TMNF game
         # remains at the user's chosen speed.
         self.sim_speed = max(0.1, min(2.0, float(speed)))
+
+    def set_checkpoint_intervals(self, quick_seconds, full_seconds):
+        quick = max(0.5, float(quick_seconds))
+        full = max(quick, float(full_seconds))
+        self.quick_checkpoint_seconds = quick
+        self.full_checkpoint_seconds = full
+        LOG.info(
+            "checkpoint intervals set: quick %.1fs, full %.1fs",
+            quick,
+            full,
+        )
 
     def set_worker_threads(self, count):
         count = max(1, min(16, int(count)))
