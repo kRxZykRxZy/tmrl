@@ -27,6 +27,9 @@ class AgentTelemetry:
     lap_times: list[float] = field(default_factory=list)
     checkpoint_times: list[float] = field(default_factory=list)
     below_speed_since_ms: int = -1
+    negative_forward_since_ms: int = -1
+    forward_speed_kmh: float = 0.0
+    forward_progress: float = 0.0
     last_steer: float = 0.0
     last_gas: float = 0.0
     history_time: list[float] = field(default_factory=list)
@@ -66,7 +69,17 @@ class AgentTelemetry:
         self.position[:] = p
         self.velocity[:] = v
         self.yaw_pitch_roll[:] = np.asarray(state.yaw_pitch_roll, np.float64)
+        previous_time = self.race_time_ms
         self.race_time_ms = int(state.race_time)
+
+        scene = getattr(state, "scene_mobil", None)
+        sync = getattr(scene, "sync_vehicle_state", None) if scene is not None else None
+        self.forward_speed_kmh = float(getattr(sync, "speed_forward", 0.0)) * 3.6
+
+        dt_s = max(0.0, (self.race_time_ms - previous_time) / 1000.0) if self.samples else 0.0
+        if dt_s > 0.0:
+            self.forward_progress += max(0.0, self.forward_speed_kmh / 3.6) * dt_s
+
         self.state_blob = blob
         self.max_distance = max(self.max_distance, self.distance)
         self.speed_sum += self.speed_kmh
@@ -81,7 +94,7 @@ class AgentTelemetry:
             self.wall_penalty += 0.05
         else:
             self.lidar += (1.0 - self.lidar) * 0.05
-        if self.race_time_ms >= 1500 and self.speed_kmh < 1.0 and self.alive:
+        if self.race_time_ms >= 500 and self.speed_kmh < 1.0 and self.alive:
             if self.below_speed_since_ms < 0:
                 self.below_speed_since_ms = self.race_time_ms
             elif self.race_time_ms - self.below_speed_since_ms >= 150:
@@ -125,6 +138,9 @@ class AgentTelemetry:
         self.alive = True; self.crashed = False; self.lap = 0
         self.lap_times.clear(); self.checkpoint_times.clear()
         self.below_speed_since_ms = -1
+        self.negative_forward_since_ms = -1
+        self.forward_speed_kmh = 0.0
+        self.forward_progress = 0.0
         self.last_steer = self.last_gas = 0
         if not keep_history:
             self.history_time.clear(); self.history_x.clear(); self.history_y.clear()
