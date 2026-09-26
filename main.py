@@ -38,8 +38,8 @@ LOG = logging.getLogger("tmrl")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 
-def clone_state(state: SimStateData) -> SimStateData:
-    return copy.deepcopy(state)
+def serialize_state(state: SimStateData) -> bytes:
+    return bytes(state.data)
 
 
 def decode_state(blob: bytes):
@@ -77,7 +77,7 @@ class Trainer(Client):
         self.training_enabled = True
         self.single_agent_mode = False
         self.map_name = str(CFG.get("map_name", ""))
-        self.game_speed = float(CFG.get("training_game_speed", 50.0))
+        self.game_speed = float(CFG.get("training_game_speed", 20.0))
         self.worker_threads = int(CFG.get("worker_threads", 2))
         self.focus = 0
         self.current_agent = 0
@@ -86,11 +86,12 @@ class Trainer(Client):
         self.generation_started = time.monotonic()
         self.last_autosave = 0.0
         self.last_summary = {"generation": 0, "best_fitness": 0.0, "mean_fitness": 0.0, "survival_rate": 0.0}
+        self.training_ticks = 0
 
         # One saved simulation state and one last-known safe state per logical car.
-        self.states: list[SimStateData | None] = [None] * N
-        self.safe_states: list[SimStateData | None] = [None] * N
-        self.generation_start_state: SimStateData | None = None
+        self.states: list[bytes | None] = [None] * N
+        self.safe_states: list[bytes | None] = [None] * N
+        self.generation_start_state: bytes | None = None
 
         self.paused = False
         self.replay_mode = False
@@ -155,11 +156,11 @@ class Trainer(Client):
 
     def _initialize_from_live_state(self, live_state):
         with self.lock:
-            self.generation_start_state = clone_state(live_state)
+            self.generation_start_state = serialize_state(live_state)
             for i, agent in enumerate(self.telemetry.agents):
-                loaded = decode_state(agent.state_blob)
-                self.states[i] = loaded if loaded is not None else clone_state(live_state)
-                self.safe_states[i] = clone_state(self.states[i])
+                loaded = agent.state_blob or self.generation_start_state
+                self.states[i] = loaded
+                self.safe_states[i] = loaded
             self.current_agent = self.focus
             self.phase = "advance"
             self.initialized = True
@@ -180,7 +181,7 @@ class Trainer(Client):
 
     def _autosave(self):
         now = time.monotonic()
-        if now - self.last_autosave < float(CFG.get("autosave_seconds", 2.0)):
+        if now - self.last_autosave < float(CFG.get("autosave_seconds", 5.0)):
             return
         self.last_autosave = now
         self.save_now()
