@@ -182,6 +182,22 @@ class ControlCenter:
         self.wall_capture_interval = 0.20
         self.wall_frame_image = None
 
+    def _select_agent(self, _event=None):
+        """Handle selection in the Agents tab and focus that live AI."""
+        try:
+            selection = self.tree.selection()
+            if not selection:
+                return
+            item = selection[0]
+            values = self.tree.item(item, "values")
+            if not values:
+                return
+            agent_id = int(values[0])
+            self.trainer.set_focus(agent_id)
+            self.camera_selected_agent = agent_id
+        except (ValueError, TypeError, IndexError):
+            return
+
     def _select_camera_agent(self, agent_id):
         self.camera_selected_agent = int(agent_id)
         self.trainer.set_focus(int(agent_id))
