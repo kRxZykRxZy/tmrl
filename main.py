@@ -1,13 +1,13 @@
-"""Single-TMInterface, 50-virtual-agent evolutionary trainer.
+"""TMRL detached ghost trainer.
 
-Important architecture:
-- exactly ONE TMNF/TMInterface process;
-- 50 independent logical trajectories are stored as TMInterface simulation states;
-- the trainer time-slices those states through the one physics process;
-- only the currently rendered trajectory can appear in the actual TMNF camera;
-- every trajectory has its own genome, telemetry, replay history and recovery state.
+The user's TMNF car is never controlled by this trainer.
+
+TMInterface is used read-only to sample the player's world position/orientation.
+Fifty AI agents run in a detached real-time kinematic simulator and are rendered
+as click-through ghost cars over the TMNF window.
 """
 from __future__ import annotations
+
 import copy
 import json
 import logging
@@ -18,16 +18,16 @@ from pathlib import Path
 
 import numpy as np
 
-from core.evolution import EvolutionEngine, FitnessResult
+from core.evolution import EvolutionEngine
 from core.network import NeuralNetwork
-from environment.telemetry import AgentTelemetry, TelemetryStore
+from environment.telemetry import TelemetryStore
+from environment.ghost_sim import GhostSimulation
 from training.checkpoint_manager import CheckpointManager
 from ui.control_center import ControlCenter
 
 try:
     from tminterface.client import Client
     from tminterface.interface import TMInterface
-    from tminterface.structs import SimStateData, CheckpointData
 except ImportError as exc:
     raise SystemExit("Install: python -m pip install -r requirements.txt") from exc
 
@@ -38,32 +38,16 @@ LOG = logging.getLogger("tmrl")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 
-def serialize_state(state: SimStateData) -> bytes:
-    return bytes(state.data)
-
-
-def deserialize_state(blob: bytes):
-    if not blob:
-        return None
-    try:
-        state = SimStateData(blob)
-        state.cp_data.resize(CheckpointData.cp_states_field, state.cp_data.cp_states_length)
-        state.cp_data.resize(CheckpointData.cp_times_field, state.cp_data.cp_times_length)
-        return state
-    except Exception as exc:
-        LOG.warning("could not decode persisted TMInterface state: %s", exc)
-        return None
-
-
 class Trainer(Client):
     def __init__(self):
         super().__init__()
+
         self.telemetry = TelemetryStore(N)
         seed = CFG.get("random_seed")
         rng = np.random.default_rng(seed)
-        population = NeuralNetwork.population(N, rng)
+
         self.engine = EvolutionEngine(
-            population,
+            NeuralNetwork.population(N, rng),
             elite_count=int(CFG["elite_count"]),
             mutation_rate=float(CFG["mutation_rate"]),
             mutation_sigma=float(CFG["mutation_sigma"]),
@@ -71,57 +55,72 @@ class Trainer(Client):
         )
 
         self.checkpoints = CheckpointManager(ROOT / "checkpoints", N)
-        self.executor = ThreadPoolExecutor(max_workers=int(CFG.get("worker_threads", 2)))
+        self.executor = ThreadPoolExecutor(
+            max_workers=int(CFG.get("worker_threads", 2))
+        )
+
         self.iface: TMInterface | None = None
         self.running = True
         self.training_enabled = True
-        self.single_agent_mode = False
-        self.map_name = str(CFG.get("map_name", ""))
-        self.game_speed = float(CFG.get("training_game_speed", 20.0))
-        self.worker_threads = int(CFG.get("worker_threads", 2))
+        self.paused = False
         self.focus = 0
-        self.current_agent = 0
-        self.phase = "advance"
-        self.initialized = False
+        self.worker_threads = int(CFG.get("worker_threads", 2))
+        self.map_name = str(CFG.get("map_name", ""))
+
+        # This factor only affects the detached simulator. It never changes
+        # TMNF's speed or input handling.
+        self.sim_speed = 1.0
+
         self.generation_started = time.monotonic()
-        self.last_autosave = 0.0
-        self.last_summary = {"generation": 0, "best_fitness": 0.0, "mean_fitness": 0.0, "survival_rate": 0.0}
         self.training_ticks = 0
         self.last_error = ""
-        self.connection_setup_done = False
+        self.last_summary = {
+            "generation": 0,
+            "best_fitness": 0.0,
+            "mean_fitness": 0.0,
+            "survival_rate": 0.0,
+        }
 
-        # One saved simulation state and one last-known safe state per logical car.
-        self.states: list[bytes | None] = [None] * N
-        self.safe_states: list[bytes | None] = [None] * N
-        self.generation_start_state: bytes | None = None
+        self.player_lock = threading.RLock()
+        self.player = None
+        self.sim_started = False
+        self.last_sim_step = time.monotonic()
+        self.generation_timeout = float(
+            CFG.get("generation_timeout_seconds", 20.0)
+        )
 
-        self.paused = False
-        self.replay_mode = False
-        self.replay_agent = 0
-        self.replay_index = 0
-        self.replay_active = False
-        self.camera_request = None
+        seed2 = None if seed is None else int(seed) + 1001
+        self.simulator = GhostSimulation(
+            self.telemetry,
+            self.engine,
+            np.random.default_rng(seed2),
+            N,
+        )
+
         self.camera_sweep = False
-        self.reset_requested = False
-        self.slice_ticks = max(1, int(CFG.get('ticks_per_slice', 5)))
-        self.slice_count = 0
-        self.lock = threading.RLock()
+
         self.autosave_stop = threading.Event()
         try:
-            self._load_persisted_population()
+            self._load_population_checkpoint_only()
         except Exception as exc:
             self.last_error = f"checkpoint load: {type(exc).__name__}: {exc}"
-            LOG.exception("checkpoint loading failed before TMInterface registration")
+            LOG.exception("population checkpoint loading failed")
 
-        self.autosave_thread = threading.Thread(target=self._autosave_loop, name="tmrl-autosave", daemon=True)
+        self.autosave_thread = threading.Thread(
+            target=self._autosave_loop,
+            name="tmrl-autosave",
+            daemon=True,
+        )
         self.autosave_thread.start()
 
     # ---------- lifecycle ----------
 
     def on_registered(self, iface):
-        # Keep this callback effectively empty: TMInterface has a 2s
-        # default response deadline for S_ON_REGISTERED.
+        # Keep this callback effectively empty. TMInterface treats
+        # S_ON_REGISTERED as a synchronous server call.
         self.iface = iface
+        LOG.info("registered with TMInterface in READ-ONLY mode")
+        LOG.info("player controls are disabled from TMRL: ghost training only")
 
     def on_shutdown(self, iface):
         self.running = False
@@ -130,431 +129,202 @@ class Trainer(Client):
         self.running = False
 
     def on_client_exception(self, iface, exception):
+        self.last_error = f"TMInterface: {type(exception).__name__}: {exception}"
         LOG.error("TMInterface exception: %s", exception)
 
-    def on_checkpoint_count_changed(self, iface, current: int, target: int):
-        with self.lock:
-            if not self.initialized:
-                return
-            agent = self.telemetry.agents[self.current_agent]
-            if current > len(agent.checkpoint_times):
-                agent.checkpoint_changed(agent.race_time_ms)
+    # ---------- persistence ----------
 
-    def on_laps_count_changed(self, iface, current: int):
-        with self.lock:
-            if not self.initialized:
-                return
-            self.telemetry.agents[self.current_agent].lap_changed(
-                int(current),
-                self.telemetry.agents[self.current_agent].race_time_ms,
-            )
-
-    # ---------- initialization / persistence ----------
-
-    def _load_persisted_population(self):
+    def _load_population_checkpoint_only(self):
         data = self.checkpoints.load_population()
         if data is None:
             return
+
         pop = data["population"]
         if pop.shape == self.engine.population.shape:
             self.engine.population[:] = pop
             self.engine.generation = data["generation"]
             self.engine.best_score = data["best_score"]
             self.map_name = data["map_name"] or self.map_name
-            LOG.info("loaded population checkpoint at generation %d", self.engine.generation)
+            LOG.info(
+                "loaded population checkpoint at generation %d",
+                self.engine.generation,
+            )
 
-        for agent in self.telemetry.agents:
-            self.checkpoints.load_agent(agent)
-
-    def _initialize_from_live_state(self, live_state):
-        with self.lock:
-            self.generation_start_state = serialize_state(live_state)
-            for i, agent in enumerate(self.telemetry.agents):
-                loaded = agent.state_blob or self.generation_start_state
-                self.states[i] = loaded
-                self.safe_states[i] = loaded
-            self.current_agent = self.focus
-            self.phase = "advance"
-            self.initialized = True
-            self.generation_started = time.monotonic()
-            LOG.info("initialized 50 virtual trajectories from current TMNF race state")
+        # Intentionally do NOT restore old state blobs here. Those states
+        # belonged to the old one-car rewind architecture.
 
     def save_now(self):
-        with self.lock:
+        with self.player_lock:
             population = self.engine.population.copy()
             generation = self.engine.generation
             best = self.engine.best_score
             map_name = self.map_name
-            agents = [(copy.deepcopy(a), population[a.agent_id].copy()) for a in self.telemetry.agents]
-        self.executor.submit(self.checkpoints.save_population, population, generation, best, map_name)
+            agents = [
+                (copy.deepcopy(a), population[a.agent_id].copy())
+                for a in self.telemetry.agents
+            ]
+
+        self.executor.submit(
+            self.checkpoints.save_population,
+            population,
+            generation,
+            best,
+            map_name,
+        )
         for agent, genome in agents:
-            self.executor.submit(self.checkpoints.save_agent, agent, genome)
+            self.executor.submit(
+                self.checkpoints.save_agent,
+                agent,
+                genome,
+            )
         self.checkpoints.manifest(generation, map_name)
 
     def _autosave_loop(self):
-        interval = max(1.0, float(CFG.get("autosave_seconds", 10.0)))
+        interval = max(2.0, float(CFG.get("autosave_seconds", 10.0)))
         while not self.autosave_stop.wait(interval):
             try:
                 self.save_now()
             except Exception:
                 LOG.exception("background autosave failed")
 
+    # ---------- player sampling ----------
+
+    def _read_player_state(self, iface):
+        state = iface.get_simulation_state()
+        position = np.asarray(state.position, np.float64)
+        ypr = np.asarray(state.yaw_pitch_roll, np.float64)
+        return {
+            "position": position,
+            "yaw": float(ypr[0]),
+            "pitch": float(ypr[1]),
+            "roll": float(ypr[2]),
+            "speed": float(state.display_speed),
+            "race_time_ms": int(state.race_time),
+        }
+
+    def player_snapshot(self):
+        with self.player_lock:
+            if self.player is None:
+                return None
+            return {
+                "position": self.player["position"].copy(),
+                "yaw": self.player["yaw"],
+                "pitch": self.player["pitch"],
+                "roll": self.player["roll"],
+                "speed": self.player["speed"],
+                "race_time_ms": self.player["race_time_ms"],
+            }
+
     # ---------- simulation ----------
 
-    def _population_commands(self):
-        observations = self.telemetry.observation_matrix(
-            float(CFG.get("speed_limit_kmh", 300.0)),
-            float(CFG.get("position_scale", 1000.0)),
-        )
-        commands, _h1, h2 = self.engine.batch_forward(observations)
-        for i, agent in enumerate(self.telemetry.agents):
-            agent.activations[:] = h2[i]
-        return commands
-
-    def _issue_action(self, agent_id: int):
-        if self.iface is None:
+    def _start_sim_from_player(self):
+        player = self.player_snapshot()
+        if player is None:
             return
-        agent = self.telemetry.agents[agent_id]
-        if not self.training_enabled or self.paused:
-            steer_norm = 0.0
-            gas_norm = 0.0
-        elif self.replay_active and agent_id == self.replay_agent:
-            hist = agent.history_steer
-            gas = agent.history_gas
-            idx = min(self.replay_index, max(0, len(hist) - 1))
-            steer_norm = hist[idx] if hist else 0.0
-            gas_norm = gas[idx] if gas else 0.0
-        else:
-            commands = self._population_commands()
-            steer_norm = float(np.clip(commands[agent_id, 0], -1.0, 1.0))
-            raw_drive = float(np.clip(commands[agent_id, 1], -1.0, 1.0))
-            # The trainer never commands reverse. Positive output is throttle;
-            # negative output is braking.
-            gas_norm = max(0.0, raw_drive)
-            brake_norm = max(0.0, -raw_drive)
-
-        self.iface.set_input_state(
-            sim_clear_buffer=False,
-            steer=int(steer_norm * 65536),
-            gas=int(gas_norm * 65536),
-            accelerate=gas_norm > 0.02,
-            brake=brake_norm > 0.02,
+        self.simulator.start(player["position"], player["yaw"])
+        self.sim_started = True
+        self.last_sim_step = time.monotonic()
+        self.generation_started = time.monotonic()
+        LOG.info(
+            "started 50 detached real-time ghost agents at player position"
         )
-        agent.record_action(steer_norm, gas_norm - brake_norm)
 
-    def _is_bad_state(self, agent: AgentTelemetry) -> bool:
-        y = float(agent.position[1])
-        speed = float(agent.speed_kmh)
-        forward_speed = float(getattr(agent, "forward_speed_kmh", 0.0))
-
-        # Hard failure conditions: falling, leaving sane map bounds, or
-        # driving backwards. These are evaluated every physics callback.
-        if y < float(CFG.get("fall_y_min", -10.0)):
-            return True
-
-        map_limit = float(CFG.get("map_abs_coordinate_limit", 5000.0))
-        if abs(float(agent.position[0])) > map_limit:
-            return True
-        if abs(float(agent.position[2])) > map_limit:
-            return True
-
-        if agent.samples >= 2 and forward_speed < -5.0:
-            if agent.negative_forward_since_ms < 0:
-                agent.negative_forward_since_ms = agent.race_time_ms
-            elif agent.race_time_ms - agent.negative_forward_since_ms >= 100:
-                return True
-        else:
-            agent.negative_forward_since_ms = -1
-
-        if agent.samples < 2:
-            return False
-
-        stuck_ms = int(CFG.get("stuck_timeout_ms", 500))
-        movement_eps = float(CFG.get("movement_epsilon", 0.05))
-        speed_threshold = float(CFG.get("stuck_speed_kmh", 1.0))
-        previous = np.asarray(getattr(agent, "_last_recovery_position", agent.position))
-        moved = float(np.linalg.norm(agent.position - previous))
-        if moved > movement_eps or speed > speed_threshold:
-            agent._last_recovery_position = agent.position.copy()
-            agent._last_movement_ms = agent.race_time_ms
-            return False
-
-        last_movement = int(getattr(agent, "_last_movement_ms", agent.race_time_ms))
-        return agent.race_time_ms - last_movement >= stuck_ms
-
-    def _deactivate_agent(self, agent_id: int, reason: str):
-        agent = self.telemetry.agents[agent_id]
-        agent.alive = False
-        agent.crashed = True
-        LOG.debug("agent %02d deactivated: %s", agent_id, reason)
-    def _recover_agent(self, agent_id: int):
-        blob = self.safe_states[agent_id] or self.states[agent_id] or self.generation_start_state
-        if not blob or self.iface is None:
-            return False
-        state = deserialize_state(blob)
-        if state is None:
-            return False
-        agent = self.telemetry.agents[agent_id]
-        agent.recoveries = getattr(agent, "recoveries", 0) + 1
-        self.iface.rewind_to_state(state)
-        agent.below_speed_since_ms = -1
-        agent.alive = True
-        agent.crashed = False
-        agent.lidar.fill(1.0)
-
-    def _store_progress_state(self, agent_id: int, state, blob: bytes | None = None):
-        agent = self.telemetry.agents[agent_id]
-        min_progress = float(CFG.get("safe_state_distance", 2.0))
-        if agent.max_distance - getattr(agent, "_last_safe_distance", -1.0) >= min_progress:
-            self.safe_states[agent_id] = blob if blob is not None else serialize_state(state)
-            agent._last_safe_distance = agent.max_distance
-
-    def _evolve_generation(self):
-        results = []
-        for agent in self.telemetry.agents:
-            results.append(
-                FitnessResult(
-                    fitness=self.engine.fitness(agent.forward_progress, agent.average_speed, agent.wall_penalty),
-                    distance=agent.forward_progress,
-                    average_speed=agent.average_speed,
-                    wall_penalty=agent.wall_penalty,
-                    survived=agent.alive,
-                )
-            )
+    def _finish_generation(self):
+        results = self.simulator.fitness_results()
         self.last_summary = self.engine.evolve(results)
         LOG.info(
             "generation %d best %.3f mean %.3f survival %.1f%%",
             self.engine.generation,
             self.last_summary["best_fitness"],
             self.last_summary["mean_fitness"],
-            self.last_summary["survival_rate"] * 100,
+            self.last_summary["survival_rate"] * 100.0,
         )
 
-        base = self.generation_start_state
-        if base is not None:
-            for i, agent in enumerate(self.telemetry.agents):
-                self.states[i] = base
-                self.safe_states[i] = base
-                agent.reset()
-        self.current_agent = self.focus
-        self.phase = "advance"
-        self.generation_started = time.monotonic()
+        if self.player_snapshot() is not None:
+            self._start_sim_from_player()
 
     def _generation_finished(self):
-        timeout = time.monotonic() - self.generation_started >= float(CFG["generation_timeout_seconds"])
-        all_dead = self.telemetry.active_count() == 0
-        return timeout or all_dead
+        if time.monotonic() - self.generation_started >= self.generation_timeout:
+            return True
+        return self.telemetry.active_count() == 0
 
     def _on_run_step_impl(self, iface, _time):
-            # Configure TMInterface from its own protocol thread. The legacy
-            # client uses a synchronous mmap protocol, so never call iface
-            # methods from a separate worker thread.
-            if not self.connection_setup_done:
-                try:
-                    iface.set_timeout(int(CFG.get("tmi_timeout_ms", 15000)))
-                    iface.set_speed(self.game_speed)
-                    self.connection_setup_done = True
-                    LOG.info("TMInterface connection setup complete")
-                except Exception as exc:
-                    self.last_error = f"interface setup: {type(exc).__name__}: {exc}"
-                    LOG.exception("TMInterface setup failed")
-                    return
+        now = time.monotonic()
 
-            with self.lock:
-                if not self.initialized:
-                    live = iface.get_simulation_state()
-                    self._initialize_from_live_state(live)
-    
-                agent_id = self.current_agent
-                agent = self.telemetry.agents[agent_id]
-                state = iface.get_simulation_state()
-    
-                # This callback is the post-action state for the current logical car.
-                if self.phase == "advance":
-                    blob = serialize_state(state)
-                    self.telemetry.update(agent_id, state, blob)
-                    self.training_ticks += 1
-                    self.states[agent_id] = serialize_state(state)
-                    self._store_progress_state(agent_id, state)
-    
-                    if self._is_bad_state(agent):
-                        self._deactivate_agent(agent_id, "fallen/backwards/stuck")
-                        self.current_agent = (agent_id + 1) % N
-                        self.slice_count = 0
-                        self.phase = "advance"
-                        return
-    
-                    if self.reset_requested:
-                        self.reset_requested = False
-                        self._reset_all_states()
-                        base = self.generation_start_state
-                        if base is not None:
-                            self.iface.rewind_to_state(deserialize_state(base))
-                        self.phase = "advance"
-                        return
-    
-                    if self._generation_finished():
-                        self._evolve_generation()
-                        base = self.generation_start_state
-                        if base is not None:
-                            self.iface.rewind_to_state(deserialize_state(base))
-                        self.phase = "advance"
-                        return
+        # Read-only: no set_input_state(), no rewind_to_state(), no respawn().
+        # Sampling is throttled so TMInterface stays responsive.
+        if self.player is None or now - getattr(self, "_last_player_sample", 0.0) >= 0.05:
+            self.player = self._read_player_state(iface)
+            self._last_player_sample = now
 
-                    if self.replay_active:
-                        self.replay_index += 1
-                        if self.replay_index >= len(agent.history_time):
-                            self.replay_active = False
-                            self.training_enabled = True
+        if not self.sim_started:
+            self._start_sim_from_player()
+            return
 
-                    # Advance this logical car with a new action on this callback.
-                    self._issue_action(agent_id)
-                    self.slice_count = 1
-                    self.phase = "post"
-                    return
-    
-                # The previous callback injected the current agent's command. We now
-                # Retain state. Run several physics ticks before switching trajectories.
-                blob = serialize_state(state)
-                self.telemetry.update(agent_id, state, blob)
-                self.training_ticks += 1
-                self.states[agent_id] = blob
-                self._store_progress_state(agent_id, state, blob)
-    
-                if self._is_bad_state(agent):
-                    self._deactivate_agent(agent_id, "fallen/backwards/stuck")
-                    self.current_agent = (agent_id + 1) % N
-                    self.slice_count = 0
-                    self.phase = "advance"
-                    return
-    
-                if self.reset_requested:
-                    self.reset_requested = False
-                    self._reset_all_states()
-                    base = self.generation_start_state
-                    if base is not None:
-                        restored = deserialize_state(base)
-                        if restored is not None:
-                            self.iface.rewind_to_state(restored)
-                    self.phase = "advance"
-                    return
-    
-                if self._generation_finished():
-                    self._evolve_generation()
-                    base = self.generation_start_state
-                    if base is not None:
-                        restored = deserialize_state(base)
-                        if restored is not None:
-                            self.iface.rewind_to_state(restored)
-                    self.phase = "advance"
-                    return
-    
-                if self.slice_count < self.slice_ticks and self.camera_request is None:
-                    self.slice_count += 1
-                    self._issue_action(agent_id)
-                    self.phase = "post"
-                    return
-    
-                if self.single_agent_mode:
-                    next_agent = self.focus
-                else:
-                    next_agent = (agent_id + 1) % N
-    
-                # A requested camera focus changes which logical state gets rendered next.
-                if self.camera_request is not None:
-                    requested = int(self.camera_request)
-                    if 0 <= requested < N:
-                        next_agent = requested
-                    self.camera_request = None
-    
-                next_state = self.states[next_agent] or self.generation_start_state
-                if next_state is not None:
-                    self.current_agent = next_agent
-                    restored = deserialize_state(next_state)
-                    if restored is not None:
-                        self.iface.rewind_to_state(restored)
-                    self.slice_count = 0
-                    self.phase = "advance"
-    
-    
+        if self.paused or not self.training_enabled:
+            self.last_sim_step = now
+            return
+
+        dt = max(0.0, min(0.05, now - self.last_sim_step))
+        self.last_sim_step = now
+        if dt <= 0.0:
+            return
+
+        scaled_dt = dt * max(0.05, min(2.0, self.sim_speed))
+        self.simulator.step(scaled_dt)
+        self.training_ticks += 1
+
+        if self._generation_finished():
+            self._finish_generation()
+
     def on_run_step(self, iface, _time):
         try:
             self._on_run_step_impl(iface, _time)
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
             LOG.exception("on_run_step failure")
-    # ---------- UI / controls ----------
+
+    # ---------- UI ----------
 
     def ui_command(self, command, value=None):
-        with self.lock:
-            if command == "resume":
-                self.paused = False
-                self.training_enabled = True
-            elif command == "pause":
-                self.paused = True
-            elif command == "retry":
-                self.reset_requested = True
-            elif command == "new_race":
-                self.initialized = False
-                for agent in self.telemetry.agents:
-                    agent.state_blob = b""
-                self._safe_tm_command("press delete")
-            elif command == "single_agent":
-                self.single_agent_mode = not self.single_agent_mode
-            elif command == "load_map":
-                if value:
-                    self.map_name = str(value)
-                    self._safe_tm_command(f'map "{self.map_name}"')
-                    for agent in self.telemetry.agents:
-                        agent.state_blob = b""
-                    self.initialized = False
-            elif command == "replay":
-                self.start_replay(int(value) if value is not None else self.focus)
-
-    def _safe_tm_command(self, command):
-        if self.iface is not None:
-            try:
-                self.iface.execute_command(command)
-            except Exception:
-                LOG.exception("TMInterface command failed: %s", command)
-
-    def _reset_all_states(self):
-        if self.generation_start_state is None:
-            return
-        for i, agent in enumerate(self.telemetry.agents):
-            self.states[i] = self.generation_start_state
-            self.safe_states[i] = self.generation_start_state
-            agent.reset()
-        self.current_agent = self.focus
-        self.phase = "advance"
-
-    def start_replay(self, agent_id: int):
-        with self.lock:
-            self.replay_agent = max(0, min(N - 1, int(agent_id)))
-            self.focus = self.replay_agent
-            self.replay_index = 0
-            self.replay_active = bool(self.telemetry.agents[self.replay_agent].history_time)
-            self.training_enabled = not self.replay_active
-            self.camera_request = self.replay_agent
-            self.current_agent = self.replay_agent
-            if self.replay_active and self.generation_start_state is not None:
-                self.states[self.replay_agent] = self.generation_start_state
-                self.safe_states[self.replay_agent] = self.generation_start_state
-                self.telemetry.agents[self.replay_agent].reset(keep_history=True)
+        if command == "resume":
+            self.paused = False
+            self.training_enabled = True
+        elif command == "pause":
+            self.paused = True
+        elif command in ("retry", "new_race"):
+            self.sim_started = False
+        elif command == "single_agent":
+            # Keep the button compatible with the UI; ghost simulation always
+            # remains 50-agent mode so the player can keep driving normally.
+            LOG.info("Single Agent is disabled in ghost-only mode; keeping 50 agents")
+        elif command == "load_map":
+            if value:
+                self.map_name = str(value)
+                # This is a map-selection operation, not car control.
+                if self.iface is not None:
+                    try:
+                        self.iface.execute_command(f'map "{self.map_name}"')
+                    except Exception as exc:
+                        self.last_error = f"map: {type(exc).__name__}: {exc}"
+                        LOG.exception("map command failed")
+                self.sim_started = False
+        elif command == "replay":
+            # Replay remains a UI-only trajectory preview.
+            pass
 
     def toggle_camera_sweep(self):
-        with self.lock:
+        with self.player_lock:
             self.camera_sweep = not self.camera_sweep
 
     def set_focus(self, agent_id):
-        with self.lock:
+        with self.player_lock:
             self.focus = max(0, min(N - 1, int(agent_id)))
-            self.camera_request = self.focus
 
     def set_game_speed(self, speed):
-        self.game_speed = max(0.1, min(100.0, float(speed)))
-        if self.iface is not None:
-            self.iface.set_speed(self.game_speed)
+        # This is now the detached ghost simulator speed. The actual TMNF game
+        # remains at the user's chosen speed.
+        self.sim_speed = max(0.1, min(2.0, float(speed)))
 
     def set_worker_threads(self, count):
         count = max(1, min(16, int(count)))
@@ -563,12 +333,36 @@ class Trainer(Client):
         self.executor = ThreadPoolExecutor(max_workers=count)
         old.shutdown(wait=False, cancel_futures=True)
 
+    def start_replay(self, agent_id: int):
+        # The Control Center's canvas preview remains the safe replay mechanism.
+        self.set_focus(agent_id)
+
+    def replay_snapshot(self, agent_id):
+        with self.player_lock:
+            a = self.telemetry.agents[
+                max(0, min(N - 1, int(agent_id)))
+            ]
+            return {
+                "time": list(a.history_time),
+                "x": list(a.history_x),
+                "y": list(a.history_y),
+                "z": list(a.history_z),
+                "speed": list(a.history_speed),
+                "steer": list(a.history_steer),
+                "gas": list(a.history_gas),
+            }
+
     def find_game_window(self):
         import ctypes
         from ctypes import wintypes
+
         user32 = ctypes.windll.user32
         found = []
-        proc_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        proc_type = ctypes.WINFUNCTYPE(
+            wintypes.BOOL,
+            wintypes.HWND,
+            wintypes.LPARAM,
+        )
 
         def callback(hwnd, _):
             if not user32.IsWindowVisible(hwnd):
@@ -578,8 +372,8 @@ class Trainer(Client):
                 return True
             title = ctypes.create_unicode_buffer(length + 1)
             user32.GetWindowTextW(hwnd, title, length + 1)
-            t = title.value.lower()
-            if "trackmania" in t and "forever" in t:
+            text = title.value.lower()
+            if "trackmania" in text and "forever" in text:
                 found.append(hwnd)
                 return False
             return True
@@ -588,55 +382,54 @@ class Trainer(Client):
         return found[0] if found else None
 
     def ui_snapshot(self):
-        with self.lock:
-            def one(agent):
-                return {
-                    "id": agent.agent_id,
-                    "alive": agent.alive,
-                    "speed": agent.speed_kmh,
-                    "forward_speed": agent.forward_speed_kmh,
-                    "distance": agent.forward_progress,
-                    "fitness": self.engine.fitness(agent.forward_progress, agent.average_speed, agent.wall_penalty),
-                    "lap": agent.lap,
-                    "lap_time": agent.latest_lap_time,
-                    "avg": agent.average_speed,
-                    "wall": agent.wall_penalty,
-                    "front": float(agent.lidar[0]),
-                    "left": float(agent.lidar[1]),
-                    "right": float(agent.lidar[2]),
-                    "steer": agent.last_steer,
-                    "gas": agent.last_gas,
-                    "checkpoints": len(agent.checkpoint_times),
-                    "recoveries": getattr(agent, "recoveries", 0),
-                }
+        with self.player_lock:
+            agents = []
+            for a in self.telemetry.agents:
+                fitness = self.engine.fitness(
+                    a.forward_progress,
+                    a.average_speed,
+                    a.wall_penalty,
+                )
+                agents.append({
+                    "id": a.agent_id,
+                    "alive": a.alive,
+                    "speed": a.speed_kmh,
+                    "forward_speed": a.forward_speed_kmh,
+                    "distance": a.forward_progress,
+                    "fitness": fitness,
+                    "lap": a.lap,
+                    "lap_time": a.latest_lap_time,
+                    "avg": a.average_speed,
+                    "wall": a.wall_penalty,
+                    "front": float(a.lidar[0]),
+                    "left": float(a.lidar[1]),
+                    "right": float(a.lidar[2]),
+                    "steer": a.last_steer,
+                    "gas": a.last_gas,
+                    "checkpoints": len(a.checkpoint_times),
+                })
 
-            agents = [one(a) for a in self.telemetry.agents]
             f = agents[self.focus]
             return {
                 "generation": self.engine.generation,
-                "best": self.engine.best_score if np.isfinite(self.engine.best_score) else 0.0,
-                "mean": self.last_summary.get("mean_fitness", 0.0),
+                "best": self.engine.best_score
+                if np.isfinite(self.engine.best_score)
+                else 0.0,
+                "mean": self.last_summary["mean_fitness"],
                 "active": self.telemetry.active_count(),
                 "focus": self.focus,
                 "focused": f,
                 "agents": agents,
-                "phase": "PAUSED" if self.paused else ("REPLAY" if self.replay_active else "TRAINING"),
-                "speed_factor": self.game_speed,
+                "phase": (
+                    "PAUSED" if self.paused else
+                    "TRAINING" if self.training_enabled else
+                    "STOPPED"
+                ),
+                "speed_factor": self.sim_speed,
                 "ticks": self.training_ticks,
                 "last_error": self.last_error,
-            }
-
-    def replay_snapshot(self, agent_id):
-        with self.lock:
-            a = self.telemetry.agents[max(0, min(N - 1, int(agent_id)))]
-            return {
-                "time": list(a.history_time),
-                "x": list(a.history_x),
-                "y": list(a.history_y),
-                "z": list(a.history_z),
-                "speed": list(a.history_speed),
-                "steer": list(a.history_steer),
-                "gas": list(a.history_gas),
+                "player_control": "OFF — ghost-only",
+                "ghost_render": "ON",
             }
 
     def save_and_stop(self):
@@ -655,10 +448,6 @@ def main():
     trainer = Trainer()
     iface = TMInterface("TMInterface0")
     trainer.iface = iface
-
-    # Build the GUI before registering with TMInterface. This prevents
-    # Tkinter startup/import work from competing with the S_ON_REGISTERED
-    # response deadline.
     ui = ControlCenter(trainer)
 
     try:
