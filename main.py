@@ -48,7 +48,7 @@ class Trainer(Client):
         rng = np.random.default_rng(seed)
 
         self.engine = EvolutionEngine(
-            NeuralNetwork.population(N, rng),
+            NeuralNetwork.population(MAX_AGENTS, rng),
             elite_count=int(CFG["elite_count"]),
             mutation_rate=float(CFG["mutation_rate"]),
             mutation_sigma=float(CFG["mutation_sigma"]),
@@ -235,7 +235,7 @@ class Trainer(Client):
         player = self.player_snapshot()
         if player is None:
             return
-        self.simulator.start(player["position"], player["yaw"])
+        self.simulator.start(player["position"], player["yaw"], self.agent_count)
         self.sim_started = True
         self.last_sim_step = time.monotonic()
         self.generation_started = time.monotonic()
@@ -425,7 +425,7 @@ class Trainer(Client):
     def replay_snapshot(self, agent_id):
         with self.player_lock:
             a = self.telemetry.agents[
-                max(0, min(N - 1, int(agent_id)))
+                max(0, min(MAX_AGENTS - 1, int(agent_id)))
             ]
             return {
                 "time": list(a.history_time),
