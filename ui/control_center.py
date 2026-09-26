@@ -100,7 +100,7 @@ class ControlCenter:
 
     def _build_settings(self):
         frm=ttk.Frame(self.settings_tab,padding=16); frm.pack(anchor="nw")
-        self.speed_var=tk.DoubleVar(value=self.trainer.game_speed)
+        self.speed_var=tk.DoubleVar(value=self.trainer.sim_speed)
         ttk.Label(frm,text="Detached ghost training speed").grid(row=0,column=0,sticky="w")
         ttk.Spinbox(frm,from_=0.25,to=100.0,increment=0.25,textvariable=self.speed_var,width=10).grid(row=0,column=1,padx=8)
         ttk.Button(frm,text="Apply speed",command=self._apply_speed).grid(row=0,column=2)
