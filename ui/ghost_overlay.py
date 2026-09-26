@@ -294,7 +294,7 @@ class GhostOverlay:
         roof_w = body_w * 0.58
         roof_h = body_h * 0.75
 
-        self.canvas.create_polygon(
+        canvas.create_polygon(
             x - body_w,
             y + body_h,
             x - body_w * 0.75,
@@ -313,7 +313,7 @@ class GhostOverlay:
         )
         wheel_r = max(2.0, body_h * 0.45)
         for wx in (x - body_w * 0.72, x + body_w * 0.72):
-            self.canvas.create_oval(
+            canvas.create_oval(
                 wx - wheel_r,
                 y + body_h * 0.15 - wheel_r,
                 wx + wheel_r,
@@ -323,7 +323,7 @@ class GhostOverlay:
             )
 
         if agent_id == self.trainer.focus:
-            self.canvas.create_text(
+            canvas.create_text(
                 x,
                 y - body_h - roof_h - 10,
                 text=f"AI {agent_id:02d}",
