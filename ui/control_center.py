@@ -176,7 +176,7 @@ class ControlCenter:
         ).pack(side="left", padx=8)
         tk.Label(scale_row, text="Step", bg="#0d1117", fg="#e8edf2").pack(side="left", padx=(20, 0))
         self.scale_step_var = tk.IntVar(value=self.trainer.cpu_scale_step)
-        tk.Spinbox(scale_row, from_=1, to=10, width=5, textvariable=self.scale_step_var).pack(side="left", padx=8)
+        tk.Spinbox(scale_row, from_=1, to=10, width=5, textvariable=self.scale_step_var, command=lambda: self.trainer.set_cpu_scale_step(self.scale_step_var.get())).pack(side="left", padx=8)
 
         camera = tk.Frame(self.settings_frame, bg="#0d1117")
         camera.pack(fill="x", padx=18, pady=12)
@@ -221,12 +221,12 @@ class ControlCenter:
         header.pack(fill="x", pady=(0, 6))
         ttk.Label(
             header,
-            text="LIVE TMNF GAMEPLAY — AI CAMERA WALL",
+            text="LIVE TMNF GAMEPLAY — PER-CAR CAMERA WALL",
             font=("Segoe UI", 12, "bold"),
         ).pack(side="left")
         self.wall_status = ttk.Label(
             header,
-            text="Waiting for TMNF window...",
+            text="player_car / player_camera • selecting AI targets ai_camera_N",
         )
         self.wall_status.pack(side="right")
 
