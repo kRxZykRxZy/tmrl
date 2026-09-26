@@ -115,10 +115,9 @@ class Trainer(Client):
     # ---------- lifecycle ----------
 
     def on_registered(self, iface):
-        # TMInterface expects s_registered to return very quickly.
-        # Do not perform disk I/O or additional interface requests here.
+        # Keep this callback effectively empty: TMInterface has a 2s
+        # default response deadline for S_ON_REGISTERED.
         self.iface = iface
-        LOG.info("registered with ONE TMInterface instance; deferring setup")
 
     def on_shutdown(self, iface):
         self.running = False
@@ -650,9 +649,15 @@ def main():
     trainer = Trainer()
     iface = TMInterface("TMInterface0")
     trainer.iface = iface
-    iface.register(trainer)
+
+    # Build the GUI before registering with TMInterface. This prevents
+    # Tkinter startup/import work from competing with the S_ON_REGISTERED
+    # response deadline.
     ui = ControlCenter(trainer)
+
     try:
+        iface.register(trainer)
+        LOG.info("TMInterface registration requested")
         ui.run()
     finally:
         trainer.stop()
