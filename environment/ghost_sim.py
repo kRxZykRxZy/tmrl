@@ -1,9 +1,4 @@
-"""Real-time, detached 50-agent ghost simulator.
-
-This simulator intentionally does not call TMInterface input or rewind APIs.
-The user's TMNF car remains completely independent. Agent positions are ordinary
-world-space ghost trajectories that are rendered by the TMRL overlay.
-"""
+"""Real-time detached ghost simulator."""
 from __future__ import annotations
 
 import math
@@ -16,7 +11,8 @@ class GhostSimulation:
         self.telemetry = telemetry
         self.engine = engine
         self.rng = rng
-        self.size = population_size
+        self.size = int(population_size)
+        self.active_count = min(self.size, 2)
         self.running = False
         self.elapsed = 0.0
         self.origin = np.zeros(3, np.float64)
@@ -26,12 +22,22 @@ class GhostSimulation:
         self.corridor_half_width = 45.0
         self.last_step = time.monotonic()
 
+    def set_active_count(self, count: int):
+        self.active_count = max(1, min(self.size, int(count)))
+        for i, agent in enumerate(self.telemetry.agents):
+            if i >= self.active_count:
+                agent.alive = False
+                agent.crashed = False
+
     def _frame(self, yaw: float):
         forward = np.array([math.sin(yaw), 0.0, math.cos(yaw)], np.float64)
         right = np.array([math.cos(yaw), 0.0, -math.sin(yaw)], np.float64)
         return forward, right
 
-    def start(self, origin, yaw):
+    def start(self, origin, yaw, active_count=None):
+        if active_count is not None:
+            self.set_active_count(active_count)
+
         self.origin[:] = np.asarray(origin, np.float64)
         self.start_yaw = float(yaw)
         self.forward, self.right = self._frame(self.start_yaw)
@@ -39,8 +45,12 @@ class GhostSimulation:
         self.last_step = time.monotonic()
         self.running = True
 
-        # Stagger ghosts behind/in front and across a broad virtual starting grid.
         for i, agent in enumerate(self.telemetry.agents):
+            if i >= self.active_count:
+                agent.alive = False
+                agent.crashed = False
+                continue
+
             col = i % 10
             row = i // 10
             lateral = (col - 4.5) * 4.0
@@ -74,7 +84,8 @@ class GhostSimulation:
 
     def _observation_matrix(self):
         rows = []
-        for agent in self.telemetry.agents:
+        for i in range(self.active_count):
+            agent = self.telemetry.agents[i]
             rel = agent.position - self.origin
             along = float(np.dot(rel, self.forward))
             lateral = float(np.dot(rel, self.right))
@@ -101,7 +112,8 @@ class GhostSimulation:
         commands, _h1, h2 = self.engine.batch_forward(observations)
 
         active = 0
-        for i, agent in enumerate(self.telemetry.agents):
+        for i in range(self.active_count):
+            agent = self.telemetry.agents[i]
             if not agent.alive:
                 continue
 
@@ -117,7 +129,6 @@ class GhostSimulation:
             acceleration = throttle * 24.0 - brake * 34.0 - 0.85
             speed_mps = float(np.clip(speed_mps + acceleration * dt, 0.0, 115.0))
 
-            # Steering becomes stronger with speed, but remains controllable.
             yaw_rate = steer * (0.45 + min(speed_mps / 20.0, 3.0))
             agent.yaw_pitch_roll[0] += yaw_rate * dt
             local_yaw = float(agent.yaw_pitch_roll[0])
@@ -145,12 +156,9 @@ class GhostSimulation:
             lateral = float(np.dot(rel, self.right))
             agent.forward_progress = max(0.0, along)
 
-            wall_margin = max(0.0, self.corridor_half_width - abs(lateral))
-            wall_factor = float(np.clip(wall_margin / self.corridor_half_width, 0.0, 1.0))
-            front_margin = float(np.clip((200.0 - max(0.0, along)) / 200.0, 0.0, 1.0))
-            agent.lidar[0] = max(0.05, front_margin)
-            agent.lidar[1] = max(0.02, np.clip((lateral + self.corridor_half_width) / (2 * self.corridor_half_width), 0.0, 1.0))
-            agent.lidar[2] = max(0.02, np.clip((self.corridor_half_width - lateral) / (2 * self.corridor_half_width), 0.0, 1.0))
+            agent.lidar[0] = max(0.05, float(np.clip((200.0 - max(0.0, along)) / 200.0, 0.0, 1.0)))
+            agent.lidar[1] = max(0.02, float(np.clip((lateral + self.corridor_half_width) / (2 * self.corridor_half_width), 0.0, 1.0)))
+            agent.lidar[2] = max(0.02, float(np.clip((self.corridor_half_width - lateral) / (2 * self.corridor_half_width), 0.0, 1.0)))
 
             if abs(lateral) > self.corridor_half_width:
                 agent.wall_penalty += (abs(lateral) - self.corridor_half_width) * 0.25
@@ -166,6 +174,7 @@ class GhostSimulation:
             elif agent.forward_progress > 5000.0:
                 agent.alive = False
                 agent.crashed = True
+
             agent.record_action(steer, throttle - brake)
 
         return active
@@ -173,7 +182,8 @@ class GhostSimulation:
     def fitness_results(self):
         from core.evolution import FitnessResult
         results = []
-        for agent in self.telemetry.agents:
+        for i in range(self.active_count):
+            agent = self.telemetry.agents[i]
             fitness = self.engine.fitness(
                 agent.forward_progress,
                 agent.average_speed,
