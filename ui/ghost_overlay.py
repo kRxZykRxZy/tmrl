@@ -269,8 +269,8 @@ class GhostOverlay:
         player = self.trainer.player_snapshot()
         if player is None:
             count = self.trainer.agent_count
-        interval = 33 if count <= 10 else 50 if count <= 25 else 80
-        self.root.after(interval, self.update)
+            interval = 33 if count <= 10 else 50 if count <= 25 else 80
+            self.root.after(interval, self.update)
             return
 
         p = player["position"]
