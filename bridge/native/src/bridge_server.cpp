@@ -198,7 +198,7 @@ void BridgeServer::serve_client(HANDLE pipe) {
 
             case kStopSession:
                 state_.destroy_all(kSession);
-                response = json_ok();
+                response = json_ok("");
                 break;
 
             case kCreateAgent: {
