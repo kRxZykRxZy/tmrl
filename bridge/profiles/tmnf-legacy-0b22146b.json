@@ -1,0 +1,18 @@
+{
+  "build_id": "tmnf-legacy-0b22146b",
+  "exe_sha256": "0b22146ba59c4326d3af8e213643595ea9ba657f57a9991e90075e7861b09578",
+  "pointer_size": 4,
+  "supported": false,
+  "game_tick": null,
+  "create_by_mw_class_id": null,
+  "scene_vehicle_car_class_id": null,
+  "scene_mobil_class_id": null,
+  "update_vehicle_state_from_inputs": null,
+  "update_vehicle_state_from_inputs_impl": null,
+  "unregister_player": null,
+  "camera": {
+    "supported": false,
+    "target_function": null,
+    "restore_function": null
+  }
+}
