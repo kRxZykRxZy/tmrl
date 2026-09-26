@@ -72,7 +72,7 @@ class ControlCenter:
     def _build_camera(self):
         left=ttk.Frame(self.camera_tab,padding=8); left.pack(side="left",fill="both",expand=True)
         right=ttk.Frame(self.camera_tab,padding=8); right.pack(side="right",fill="y")
-        self.live_label=ttk.Label(left,text="TMNF live camera"); self.live_label.pack(fill="both",expand=True)
+        self.live_label=ttk.Label(left,text="TMNF live camera — waiting for game window...",anchor="center"); self.live_label.pack(fill="both",expand=True)
         ttk.Label(left,text="Live image is the one rendered car; the right wall represents the 50 logical agents/replay telemetry.").pack(anchor="w")
         self.wall_canvas=tk.Canvas(right,width=650,height=720,bg="#0d1117",highlightthickness=0); self.wall_canvas.pack(fill="both",expand=True)
 
@@ -177,7 +177,7 @@ class ControlCenter:
             a=s["focused"]; self.focus_label.config(text=f"Focused agent: {a['id']}")
             for key in ("speed","distance","fitness","avg","lap","wall","front","left","right"):
                 val=a[key]; getattr(self,key+"_label").config(text=f"{key}: {val:.2f}" if isinstance(val,float) else f"{key}: {val}")
-            self.stats.delete("1.0","end"); self.stats.insert("end",f"Generation: {s['generation']}\nBest fitness: {s['best']:.3f}\nMean fitness: {s['mean']:.3f}\nActive: {s['active']}/50\nTraining ticks: {s.get('ticks',0)}\nGame speed: {s['speed_factor']}x\nMap: {self.trainer.map_name}\nFocused command: steer={a['steer']:+.3f}, gas={a['gas']:+.3f}\nLap: {a['lap']}  Lap time: {a['lap_time']:.3f}s\nCheckpoints: {a['checkpoints']}\n")
+            self.stats.delete("1.0","end"); self.stats.insert("end",f"Generation: {s['generation']}\nBest fitness: {s['best']:.3f}\nMean fitness: {s['mean']:.3f}\nActive: {s['active']}/50\nTraining ticks: {s.get('ticks',0)}\nGame speed: {s['speed_factor']}x\nMap: {self.trainer.map_name}\nLast error: {s.get('last_error','')}\nFocused command: steer={a['steer']:+.3f}, gas={a['gas']:+.3f}\nLap: {a['lap']}  Lap time: {a['lap_time']:.3f}s\nCheckpoints: {a['checkpoints']}\n")
             self._draw_wall(s); self._draw_replay(); self._capture_game()
         except Exception: pass
         self.root.after(200,self.refresh)
