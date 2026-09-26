@@ -1,0 +1,36 @@
+name: native-bridge-build
+
+on:
+  push:
+    paths:
+      - "bridge/native/**"
+      - "bridge/profiles/**"
+      - ".github/workflows/native-bridge-build.yml"
+  pull_request:
+    paths:
+      - "bridge/native/**"
+      - "bridge/profiles/**"
+      - ".github/workflows/native-bridge-build.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure 32-bit bridge
+        run: cmake -S bridge/native -B bridge/build-native -A Win32
+
+      - name: Build Release
+        run: cmake --build bridge/build-native --config Release
+
+      - name: Verify DLL exists
+        shell: cmd
+        run: if not exist bridge\build-native\Release\tmrl_tmnf_bridge.dll exit /b 1
+
+      - name: Upload bridge DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: tmrl-tmnf-bridge-win32
+          path: bridge/build-native/Release/tmrl_tmnf_bridge.dll
