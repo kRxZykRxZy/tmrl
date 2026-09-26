@@ -125,3 +125,38 @@ The default runtime is intentionally conservative after high-population testing 
 - Scaling happens gradually in steps and applies at generation boundaries.
 
 For a low-power PC, leave the default 2 ghosts. Increase the live count manually only while monitoring CPU usage.
+
+
+## Native TMNF bridge
+
+The repository now contains a native bridge layer under `bridge/`.
+
+Vehicle identities are stable:
+
+    player_car
+    ai_thread_1
+    ai_thread_2
+    ...
+    ai_thread_50
+
+Camera identities are separate:
+
+    player_camera
+    ai_camera_1
+    ai_camera_2
+    ...
+    ai_camera_50
+
+The Control Center can scale live AI agents and select individual AI camera
+targets.
+
+The native DLL uses a Windows named pipe:
+
+    \\.\pipe\TMRL.TMNF.Bridge.v1
+
+The bridge is fail-closed. It will not write to TMNF until the exact
+`TmForever.exe` build is verified by SHA-256 and the corresponding native
+profile passes runtime checks.
+
+See `bridge/PLAN.md`, `bridge/API.md` and
+`bridge/research/PUBLIC_TMNf_SYMBOL_LEADS.md`.
