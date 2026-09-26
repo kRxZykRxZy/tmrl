@@ -1,9 +1,8 @@
 #include "bridge_server.h"
 
-#include <cstring>
 #include <cstdlib>
-#include <sstream>
-#include <vector>
+#include <cstring>
+#include <string>
 
 namespace {
 #pragma pack(push, 1)
@@ -28,7 +27,7 @@ constexpr std::uint16_t kDestroyAll = 0x0103;
 constexpr std::uint16_t kCameraTarget = 0x0500;
 constexpr std::uint16_t kCameraRelease = 0x0501;
 constexpr std::uint16_t kCameraState = 0x0502;
-constexpr std::uint16_t kMaxFrame = 1024 * 1024;
+constexpr std::uint32_t kMaxFrame = 1024u * 1024u;
 
 std::string result_name(tmrl::ResultCode code) {
     switch (code) {
@@ -43,52 +42,45 @@ std::string result_name(tmrl::ResultCode code) {
 }
 
 std::string find_json_string(const std::string& body, const char* key) {
-    const std::string needle = std::string(""") + key + """;
-    auto pos = body.find(needle);
-    if (pos == std::string::npos) return {};
-    pos = body.find(':', pos);
-    if (pos == std::string::npos) return {};
-    pos = body.find('"', pos);
-    if (pos == std::string::npos) return {};
-    auto end = body.find('"', pos + 1);
+    const std::string needle = std::string("\"") + key + "\"";
+    const auto key_pos = body.find(needle);
+    if (key_pos == std::string::npos) return {};
+    const auto colon = body.find(':', key_pos + needle.size());
+    if (colon == std::string::npos) return {};
+    const auto begin = body.find('"', colon + 1);
+    if (begin == std::string::npos) return {};
+    const auto end = body.find('"', begin + 1);
     if (end == std::string::npos) return {};
-    return body.substr(pos + 1, end - pos - 1);
+    return body.substr(begin + 1, end - begin - 1);
 }
 
-std::uint32_t find_json_u32(const std::string& body, const char* key, std::uint32_t fallback = 0) {
-    const std::string needle = std::string(""") + key + """;
-    auto pos = body.find(needle);
-    if (pos == std::string::npos) return fallback;
-    pos = body.find(':', pos);
-    if (pos == std::string::npos) return fallback;
-    ++pos;
-    while (pos < body.size() && (body[pos] == ' ' || body[pos] == '\t')) ++pos;
+std::uint32_t find_json_u32(const std::string& body, const char* key,
+                            std::uint32_t fallback = 0) {
+    const std::string needle = std::string("\"") + key + "\"";
+    const auto key_pos = body.find(needle);
+    if (key_pos == std::string::npos) return fallback;
+    const auto colon = body.find(':', key_pos + needle.size());
+    if (colon == std::string::npos) return fallback;
+
+    const char* begin = body.c_str() + colon + 1;
+    while (*begin == ' ' || *begin == '\t') ++begin;
+
     char* end = nullptr;
-    auto value = std::strtoul(body.c_str() + pos, &end, 10);
-    return end == body.c_str() + pos ? fallback : static_cast<std::uint32_t>(value);
+    const auto value = std::strtoul(begin, &end, 10);
+    return end == begin ? fallback : static_cast<std::uint32_t>(value);
 }
 
-std::uint64_t find_json_u64(const std::string& body, const char* key, std::uint64_t fallback = 0) {
-    const std::string needle = std::string(""") + key + """;
-    auto pos = body.find(needle);
-    if (pos == std::string::npos) return fallback;
-    pos = body.find(':', pos);
-    if (pos == std::string::npos) return fallback;
-    ++pos;
-    while (pos < body.size() && (body[pos] == ' ' || body[pos] == '\t')) ++pos;
-    char* end = nullptr;
-    auto value = std::strtoull(body.c_str() + pos, &end, 10);
-    return end == body.c_str() + pos ? fallback : static_cast<std::uint64_t>(value);
+std::string json_ok(const std::string& extra = {}) {
+    if (extra.empty()) return R"({"ok":true})";
+    return std::string(R"({"ok":true,)") + extra + "}";
 }
 
-std::string json_escape(const std::string& value) {
-    std::string out;
-    out.reserve(value.size() + 8);
-    for (char ch : value) {
-        if (ch == '"' || ch == '\') out.push_back('\');
-        out.push_back(ch);
-    }
-    return out;
+std::string json_error(tmrl::ResultCode code, const char* detail) {
+    return std::string(R"({"ok":false,"code":")") +
+           result_name(code) +
+           R"(","message":")" +
+           detail +
+           R"("})";
 }
 
 } // namespace
@@ -96,33 +88,20 @@ std::string json_escape(const std::string& value) {
 namespace tmrl {
 
 BridgeServer::BridgeServer() = default;
-
 BridgeServer::~BridgeServer() = default;
 
 void BridgeServer::stop() {
     stopping_.store(true);
 }
 
-std::string BridgeServer::json_ok(const std::string& extra) {
-    return std::string("{"ok":true,") + extra + "}";
-}
-
-std::string BridgeServer::json_error(ResultCode code, const char* detail) {
-    return std::string("{"ok":false,"code":"") +
-           result_name(code) +
-           "","message":"" +
-           detail +
-           ""}";
-}
-
 bool BridgeServer::read_frame(
     HANDLE pipe,
     std::uint16_t& message,
     std::uint64_t& sequence,
-    std::string& body
-) {
+    std::string& body) {
     Header header{};
     DWORD read = 0;
+
     if (!ReadFile(pipe, &header, sizeof(header), &read, nullptr) ||
         read != sizeof(header)) {
         return false;
@@ -135,16 +114,11 @@ bool BridgeServer::read_frame(
     }
 
     body.resize(header.length);
-    if (header.length == 0) {
-        body.clear();
-        message = header.message;
-        sequence = header.sequence;
-        return true;
-    }
-
-    if (!ReadFile(pipe, body.data(), header.length, &read, nullptr) ||
-        read != header.length) {
-        return false;
+    if (header.length != 0) {
+        if (!ReadFile(pipe, body.data(), header.length, &read, nullptr) ||
+            read != header.length) {
+            return false;
+        }
     }
 
     message = header.message;
@@ -156,8 +130,7 @@ bool BridgeServer::write_frame(
     HANDLE pipe,
     std::uint16_t message,
     std::uint64_t sequence,
-    const std::string& body
-) {
+    const std::string& body) {
     Header header{};
     std::memcpy(header.magic, "TMRB", 4);
     header.version = kProtocolVersion;
@@ -171,10 +144,11 @@ bool BridgeServer::write_frame(
         return false;
     }
 
-    if (!body.empty() &&
-        (!WriteFile(pipe, body.data(), static_cast<DWORD>(body.size()), &written, nullptr) ||
-         written != body.size())) {
-        return false;
+    if (!body.empty()) {
+        if (!WriteFile(pipe, body.data(), static_cast<DWORD>(body.size()), &written, nullptr) ||
+            written != body.size()) {
+            return false;
+        }
     }
 
     return true;
@@ -184,7 +158,7 @@ void BridgeServer::serve_client(HANDLE pipe) {
     std::uint16_t message = 0;
     std::uint64_t sequence = 0;
     std::string body;
-    std::uint64_t session = 0x544D524C00000001ull;
+    constexpr std::uint64_t kSession = 0x544D524C00000001ull;
 
     while (!stopping_.load() && read_frame(pipe, message, sequence, body)) {
         std::string response;
@@ -192,108 +166,105 @@ void BridgeServer::serve_client(HANDLE pipe) {
         switch (message) {
             case kHello:
                 response = json_ok(
-                    ""protocol_version":1,"
-                    ""bridge_version":"0.1.0-native-bridge","
-                    ""session_id":"1469598103934665603","
-                    ""supported_build":false,"
-                    ""native_vehicle_spawn":false,"
-                    ""native_vehicle_physics":false,"
-                    ""native_vehicle_input":false,"
-                    ""native_vehicle_pose":false,"
-                    ""native_telemetry":false,"
-                    ""native_camera":false,"
-                    ""max_ai_slots":50,"
-                    ""build_id":"UNVERIFIED","
-                    ""read_only_reason":"No verified TmForever.exe build profile is installed""
+                    R"("protocol_version":1,"bridge_version":"0.1.0-native-bridge",)"
+                    R"("session_id":"1469598103934665603","supported_build":false,)"
+                    R"("native_vehicle_spawn":false,"native_vehicle_physics":false,)"
+                    R"("native_vehicle_input":false,"native_vehicle_pose":false,)"
+                    R"("native_telemetry":false,"native_camera":false,"max_ai_slots":50,)"
+                    R"("build_id":"UNVERIFIED","read_only_reason":"No verified TmForever.exe build profile is installed")"
                 );
                 break;
 
             case kCapabilities:
                 response = json_ok(
-                    ""supported_build":false,"
-                    ""native_vehicle_spawn":false,"
-                    ""native_vehicle_physics":false,"
-                    ""native_vehicle_input":false,"
-                    ""native_vehicle_pose":false,"
-                    ""native_telemetry":false,"
-                    ""native_camera":false,"
-                    ""max_ai_slots":50,"
-                    ""bridge_version":"0.1.0-native-bridge","
-                    ""protocol_version":1,"
-                    ""build_id":"UNVERIFIED","
-                    ""read_only_reason":"No verified TmForever.exe build profile is installed""
+                    R"("supported_build":false,"native_vehicle_spawn":false,)"
+                    R"("native_vehicle_physics":false,"native_vehicle_input":false,)"
+                    R"("native_vehicle_pose":false,"native_telemetry":false,)"
+                    R"("native_camera":false,"max_ai_slots":50,)"
+                    R"("bridge_version":"0.1.0-native-bridge","protocol_version":1,)"
+                    R"("build_id":"UNVERIFIED","read_only_reason":"No verified TmForever.exe build profile is installed")"
                 );
                 break;
 
             case kPing:
                 response = json_ok(
-                    ""bridge_version":"0.1.0-native-bridge","
-                    ""game_thread":"not_attached","
-                    ""native_mode":false"
+                    R"("bridge_version":"0.1.0-native-bridge","game_thread":"not_attached","native_mode":false)"
                 );
                 break;
 
             case kStartSession:
-                response = json_ok(
-                    ""session_id":"1469598103934665603""
-                );
+                response = json_ok(R"("session_id":"1469598103934665603")");
                 break;
 
             case kStopSession:
-                state_.destroy_all(session);
-                response = json_ok("");
+                state_.destroy_all(kSession);
+                response = json_ok();
                 break;
 
             case kCreateAgent: {
-                std::uint32_t agent_id = find_json_u32(body, "agent_id");
+                const auto agent_id = find_json_u32(body, "agent_id");
                 VehicleHandle handle{};
-                auto code = state_.create_ai(session, agent_id, handle);
+                const auto code = state_.create_ai(kSession, agent_id, handle);
                 if (code != ResultCode::Ok) {
-                    response = json_error(code, "native vehicle creation is not enabled for this build");
+                    response = json_error(
+                        code,
+                        "native vehicle creation is not enabled for this build");
                 } else {
                     response = json_ok(
-                        std::string(""slot_id":") + std::to_string(handle.slot) +
-                        ","generation":" + std::to_string(handle.generation) +
-                        ","vehicle_id":"ai_thread_" + std::to_string(agent_id + 1) + """
+                        std::string(R"("slot_id":)") + std::to_string(handle.slot) +
+                        R"(,"generation":)" + std::to_string(handle.generation) +
+                        R"(,"vehicle_id":")" +
+                        "ai_thread_" + std::to_string(agent_id + 1) + R"(")"
                     );
                 }
                 break;
             }
 
-            case kDestroyAgent:
-                response = json_ok("");
+            case kDestroyAgent: {
+                const auto slot = find_json_u32(body, "slot_id");
+                const auto generation = find_json_u32(body, "generation");
+                const VehicleHandle handle{kSession, slot, generation};
+                response = json_ok();
+                state_.destroy_ai(kSession, handle);
                 break;
+            }
 
             case kDestroyAll:
-                state_.destroy_all(session);
-                response = json_ok("");
+                state_.destroy_all(kSession);
+                response = json_ok();
                 break;
 
             case kCameraTarget:
             case kCameraState: {
-                std::uint32_t slot = find_json_u32(body, "slot_id");
-                std::uint32_t generation = find_json_u32(body, "generation");
-                VehicleHandle handle{session, slot, generation};
-                auto code = state_.camera_target(session, handle);
+                const auto slot = find_json_u32(body, "slot_id");
+                const auto generation = find_json_u32(body, "generation");
+                const VehicleHandle handle{kSession, slot, generation};
+                const auto code = state_.camera_target(kSession, handle);
+
                 if (code != ResultCode::Ok) {
                     response = json_error(code, "camera target handle is invalid");
                 } else {
                     const auto* vehicle = state_.get_vehicle(slot);
+                    const std::string camera_id =
+                        vehicle ? vehicle->camera_id
+                                : "ai_camera_" + std::to_string(slot + 1);
+                    const std::string vehicle_id =
+                        vehicle ? vehicle->vehicle_id
+                                : "ai_thread_" + std::to_string(slot + 1);
+
                     response = json_ok(
-                        std::string(""camera_id":"") +
-                        (vehicle ? vehicle->camera_id : "ai_camera_" + std::to_string(slot + 1)) +
-                        "","vehicle_id":"" +
-                        (vehicle ? vehicle->vehicle_id : "ai_thread_" + std::to_string(slot + 1)) +
-                        "","mode":"chase","fov_deg":90.0,"distance":6.0,"height":2.0,"
-                        ""active":true,"native_supported":false"
+                        std::string(R"("camera_id":")") + camera_id +
+                        R"(","vehicle_id":")" + vehicle_id +
+                        R"(","mode":"chase","fov_deg":90.0,"distance":6.0,"height":2.0,)"
+                        R"("active":true,"native_supported":false)"
                     );
                 }
                 break;
             }
 
             case kCameraRelease:
-                state_.camera_release(session);
-                response = json_ok("");
+                state_.camera_release(kSession);
+                response = json_ok();
                 break;
 
             default:
@@ -314,7 +285,7 @@ void BridgeServer::serve_client(HANDLE pipe) {
 void BridgeServer::run() {
     while (!stopping_.load()) {
         HANDLE pipe = CreateNamedPipeW(
-            L"\\.\pipe\TMRL.TMNF.Bridge.v1",
+            LR"(\.pipeTMRL.TMNF.Bridge.v1)",
             PIPE_ACCESS_DUPLEX,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
             1,
@@ -328,7 +299,7 @@ void BridgeServer::run() {
             return;
         }
 
-        BOOL connected = ConnectNamedPipe(pipe, nullptr)
+        const BOOL connected = ConnectNamedPipe(pipe, nullptr)
             ? TRUE
             : (GetLastError() == ERROR_PIPE_CONNECTED);
 
