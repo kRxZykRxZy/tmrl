@@ -79,7 +79,7 @@ class ControlCenter:
         left=ttk.Frame(self.camera_tab,padding=8); left.pack(side="left",fill="both",expand=True)
         right=ttk.Frame(self.camera_tab,padding=8); right.pack(side="right",fill="y")
         self.live_label=ttk.Label(left,text="TMNF player camera — your car remains yours",anchor="center"); self.live_label.pack(fill="both",expand=True)
-        ttk.Label(left,text="50 detached AI ghost cars are rendered as a click-through overlay. Your TMNF controls are never injected.").pack(anchor="w")
+        ttk.Label(left,text="Detached AI ghosts are rendered over your live TMNF camera. The wall shows a simulated camera for each live ghost. Your TMNF controls are never injected.").pack(anchor="w")
         self.wall_canvas=tk.Canvas(right,width=650,height=720,bg="#0d1117",highlightthickness=0); self.wall_canvas.pack(fill="both",expand=True)
 
     def _build_replay(self):
@@ -266,7 +266,7 @@ class ControlCenter:
             for key in ("speed","distance","fitness","avg","lap","wall","front","left","right"):
                 val=a[key]; getattr(self,key+"_label").config(text=f"{key}: {val:.2f}" if isinstance(val,float) else f"{key}: {val}")
             self.stats.delete("1.0","end"); self.stats.insert("end",f"Generation: {s['generation']}\nBest fitness: {s['best']:.3f}\nMean fitness: {s['mean']:.3f}\nActive: {s['active']}/50\nTraining ticks: {s.get('ticks',0)}\nGame speed: {s['speed_factor']}x\nMap: {self.trainer.map_name}\nLast error: {s.get('last_error','')}\nFocused command: steer={a['steer']:+.3f}, gas={a['gas']:+.3f}\nLap: {a['lap']}  Lap time: {a['lap_time']:.3f}s\nCheckpoints: {a['checkpoints']}\n")
-            self._draw_wall(s); self._draw_replay(); self._capture_game()
+            self.ghost_overlay._draw_camera_wall(s); self._draw_replay(); self._capture_game()
             cpu=s.get('cpu_usage')
             if hasattr(self,'cpu_status'):
                 self.cpu_status.config(text=f"CPU: {cpu:.1f}%  |  ghosts: {s['agent_count']}  |  adaptive: {'ON' if s.get('adaptive_cpu') else 'OFF'}" if cpu is not None else "CPU: measuring...")
