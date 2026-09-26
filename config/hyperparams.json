@@ -37,5 +37,13 @@
   "cpu_scale_step": 2,
   "cpu_scale_interval_seconds": 5,
   "quick_checkpoint_seconds": 2,
-  "full_checkpoint_seconds": 30
+  "full_checkpoint_seconds": 30,
+  "max_native_ai_agents": 50,
+  "native_bridge_enabled": false,
+  "bridge_pipe": "\\\\.\\pipe\\TMRL.TMNF.Bridge.v1",
+  "per_car_cameras": true,
+  "camera_mode": "chase",
+  "camera_fov_deg": 90,
+  "camera_distance_m": 6,
+  "camera_height_m": 2
 }
