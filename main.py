@@ -22,6 +22,7 @@ from core.evolution import EvolutionEngine
 from core.network import NeuralNetwork
 from environment.telemetry import TelemetryStore
 from environment.ghost_sim import GhostSimulation
+from environment.resource_monitor import CPUUsage
 from training.checkpoint_manager import CheckpointManager
 from ui.control_center import ControlCenter
 
@@ -33,7 +34,7 @@ except ImportError as exc:
 
 ROOT = Path(__file__).resolve().parent
 CFG = json.loads((ROOT / "config" / "hyperparams.json").read_text(encoding="utf-8"))
-N = int(CFG["population_size"])
+MAX_AGENTS = int(CFG["population_size"])
 LOG = logging.getLogger("tmrl")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -42,7 +43,7 @@ class Trainer(Client):
     def __init__(self):
         super().__init__()
 
-        self.telemetry = TelemetryStore(N)
+        self.telemetry = TelemetryStore(MAX_AGENTS)
         seed = CFG.get("random_seed")
         rng = np.random.default_rng(seed)
 
@@ -54,7 +55,7 @@ class Trainer(Client):
             seed=seed,
         )
 
-        self.checkpoints = CheckpointManager(ROOT / "checkpoints", N)
+        self.checkpoints = CheckpointManager(ROOT / "checkpoints", MAX_AGENTS)
         self.executor = ThreadPoolExecutor(
             max_workers=int(CFG.get("worker_threads", 2))
         )
@@ -66,6 +67,17 @@ class Trainer(Client):
         self.focus = 0
         self.worker_threads = int(CFG.get("worker_threads", 2))
         self.map_name = str(CFG.get("map_name", ""))
+        self.agent_count = max(1, min(MAX_AGENTS, int(CFG.get("default_agent_count", 2))))
+        self.adaptive_cpu = bool(CFG.get("adaptive_cpu", False))
+        self.cpu_target = float(CFG.get("cpu_target_percent", 70.0))
+        self.cpu_min_agents = max(1, min(MAX_AGENTS, int(CFG.get("cpu_min_agents", 2))))
+        self.cpu_max_agents = max(self.cpu_min_agents, min(MAX_AGENTS, int(CFG.get("cpu_max_agents", MAX_AGENTS))))
+        self.cpu_scale_step = max(1, int(CFG.get("cpu_scale_step", 2)))
+        self.cpu_scale_interval = max(1.0, float(CFG.get("cpu_scale_interval_seconds", 5.0)))
+        self.cpu_usage = None
+        self.cpu_monitor = CPUUsage()
+        self.last_cpu_scale = time.monotonic()
+        self.pending_agent_count = self.agent_count
 
         # This factor only affects the detached simulator. It never changes
         # TMNF's speed or input handling.
@@ -79,6 +91,7 @@ class Trainer(Client):
             "best_fitness": 0.0,
             "mean_fitness": 0.0,
             "survival_rate": 0.0,
+            "agent_count": self.agent_count,
         }
 
         self.player_lock = threading.RLock()
@@ -94,8 +107,9 @@ class Trainer(Client):
             self.telemetry,
             self.engine,
             np.random.default_rng(seed2),
-            N,
+            MAX_AGENTS,
         )
+        self.simulator.set_active_count(self.agent_count)
 
         self.camera_sweep = False
 
@@ -226,12 +240,19 @@ class Trainer(Client):
         self.last_sim_step = time.monotonic()
         self.generation_started = time.monotonic()
         LOG.info(
-            "started 50 detached real-time ghost agents at player position"
+            "started %d detached real-time ghost agents at player position",
+            self.agent_count,
         )
 
     def _finish_generation(self):
         results = self.simulator.fitness_results()
-        self.last_summary = self.engine.evolve(results)
+        self.last_summary = self.engine.evolve_subset(results, self.agent_count)
+
+        if self.pending_agent_count != self.agent_count:
+            self.agent_count = self.pending_agent_count
+            self.simulator.set_active_count(self.agent_count)
+
+        self._sample_cpu_and_maybe_scale(force=True)
         LOG.info(
             "generation %d best %.3f mean %.3f survival %.1f%%",
             self.engine.generation,
@@ -273,6 +294,7 @@ class Trainer(Client):
         scaled_dt = dt * max(0.05, min(2.0, self.sim_speed))
         self.simulator.step(scaled_dt)
         self.training_ticks += 1
+        self._sample_cpu_and_maybe_scale()
 
         if self._generation_finished():
             self._finish_generation()
@@ -283,6 +305,69 @@ class Trainer(Client):
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
             LOG.exception("on_run_step failure")
+
+    # ---------- resource scaling ----------
+
+    def _sample_cpu_and_maybe_scale(self, force=False):
+        now = time.monotonic()
+        usage = self.cpu_monitor.sample()
+        if usage is not None:
+            self.cpu_usage = usage
+
+        if not self.adaptive_cpu:
+            return
+        if not force and now - self.last_cpu_scale < self.cpu_scale_interval:
+            return
+
+        self.last_cpu_scale = now
+        if self.cpu_usage is None:
+            return
+
+        low = max(5.0, self.cpu_target - 10.0)
+        high = min(99.0, self.cpu_target + 10.0)
+        desired = self.agent_count
+
+        if self.cpu_usage > high:
+            desired = max(self.cpu_min_agents, self.agent_count - self.cpu_scale_step)
+        elif self.cpu_usage < low:
+            desired = min(self.cpu_max_agents, self.agent_count + self.cpu_scale_step)
+
+        if desired != self.agent_count:
+            self.pending_agent_count = desired
+            LOG.info(
+                "adaptive CPU scaling: %.1f%% CPU -> request %d ghosts (current %d)",
+                self.cpu_usage, desired, self.agent_count,
+            )
+
+    def set_agent_count(self, count):
+        count = max(1, min(MAX_AGENTS, int(count)))
+        self.pending_agent_count = count
+        if not self.sim_started:
+            self.agent_count = count
+            self.simulator.set_active_count(count)
+        else:
+            LOG.info(
+                "ghost count change requested: %d -> %d; applying at next generation",
+                self.agent_count, count,
+            )
+
+    def set_adaptive_cpu(self, enabled):
+        self.adaptive_cpu = bool(enabled)
+        if self.adaptive_cpu:
+            self.last_cpu_scale = 0.0
+
+    def set_cpu_target(self, target):
+        self.cpu_target = max(20.0, min(95.0, float(target)))
+
+    def set_cpu_min_agents(self, count):
+        self.cpu_min_agents = max(1, min(MAX_AGENTS, int(count)))
+        if self.cpu_max_agents < self.cpu_min_agents:
+            self.cpu_max_agents = self.cpu_min_agents
+        self.pending_agent_count = max(self.pending_agent_count, self.cpu_min_agents)
+
+    def set_cpu_max_agents(self, count):
+        self.cpu_max_agents = max(self.cpu_min_agents, min(MAX_AGENTS, int(count)))
+        self.pending_agent_count = min(self.pending_agent_count, self.cpu_max_agents)
 
     # ---------- UI ----------
 
@@ -319,7 +404,7 @@ class Trainer(Client):
 
     def set_focus(self, agent_id):
         with self.player_lock:
-            self.focus = max(0, min(N - 1, int(agent_id)))
+            self.focus = max(0, min(MAX_AGENTS - 1, int(agent_id)))
 
     def set_game_speed(self, speed):
         # This is now the detached ghost simulator speed. The actual TMNF game
@@ -417,6 +502,14 @@ class Trainer(Client):
                 else 0.0,
                 "mean": self.last_summary["mean_fitness"],
                 "active": self.telemetry.active_count(),
+                "agent_count": self.agent_count,
+                "max_agents": MAX_AGENTS,
+                "cpu_usage": self.cpu_usage,
+                "adaptive_cpu": self.adaptive_cpu,
+                "cpu_target": self.cpu_target,
+                "cpu_min_agents": self.cpu_min_agents,
+                "cpu_max_agents": self.cpu_max_agents,
+                "pending_agent_count": self.pending_agent_count,
                 "focus": self.focus,
                 "focused": f,
                 "agents": agents,
