@@ -465,6 +465,10 @@ class Trainer(Client):
                 self.safe_states[self.replay_agent] = clone_state(self.generation_start_state)
                 self.telemetry.agents[self.replay_agent].reset(keep_history=True)
 
+    def toggle_camera_sweep(self):
+        with self.lock:
+            self.camera_sweep = not self.camera_sweep
+
     def set_focus(self, agent_id):
         with self.lock:
             self.focus = max(0, min(N - 1, int(agent_id)))
