@@ -76,11 +76,137 @@ class ControlCenter:
         self.tree.pack(fill="both",expand=True); self.tree.bind("<<TreeviewSelect>>",self._select_agent)
 
     def _build_camera(self):
-        left=ttk.Frame(self.camera_tab,padding=8); left.pack(side="left",fill="both",expand=True)
-        right=ttk.Frame(self.camera_tab,padding=8); right.pack(side="right",fill="y")
-        self.live_label=ttk.Label(left,text="TMNF player camera — your car remains yours",anchor="center"); self.live_label.pack(fill="both",expand=True)
-        ttk.Label(left,text="Detached AI ghosts are rendered over your live TMNF camera. The wall shows a simulated camera for each live ghost. Your TMNF controls are never injected.").pack(anchor="w")
-        self.wall_canvas=tk.Canvas(right,width=650,height=720,bg="#0d1117",highlightthickness=0); self.wall_canvas.pack(fill="both",expand=True)
+        left = ttk.Frame(self.camera_tab, padding=8)
+        left.pack(side="left", fill="both", expand=True)
+        right = ttk.Frame(self.camera_tab, padding=8, width=310)
+        right.pack(side="right", fill="y")
+        right.pack_propagate(False)
+
+        ttk.Label(
+            left,
+            text="Ghost camera — selected AI's simulated first-person/chase view",
+            anchor="w",
+            font=("Segoe UI", 12, "bold"),
+        ).pack(fill="x", pady=(0, 5))
+        self.ghost_camera_canvas = tk.Canvas(
+            left, bg="#080b0f", highlightthickness=0
+        )
+        self.ghost_camera_canvas.pack(fill="both", expand=True)
+
+        ttk.Label(
+            right,
+            text="ACTIVE GHOSTS",
+            font=("Segoe UI", 12, "bold"),
+        ).pack(anchor="w", pady=(0, 6))
+        self.active_ghost_frame = ttk.Frame(right)
+        self.active_ghost_frame.pack(fill="x")
+
+        ttk.Separator(right).pack(fill="x", pady=10)
+        self.camera_agent_label = ttk.Label(
+            right, text="Select a live ghost", font=("Segoe UI", 12, "bold")
+        )
+        self.camera_agent_label.pack(anchor="w", pady=3)
+        self.camera_stats = tk.Text(
+            right, height=14, width=32,
+            bg="#101318", fg="#e8edf2",
+            insertbackground="white",
+            state="disabled",
+        )
+        self.camera_stats.pack(fill="x", pady=4)
+        ttk.Label(
+            right,
+            text="Click an ACTIVE ghost to view its camera.\n"
+                 "The view is generated from that ghost's simulated position, "
+                 "yaw and speed, including other visible AI cars.",
+            wraplength=280,
+        ).pack(anchor="w", pady=8)
+
+        self.camera_selected_agent = 0
+
+    def _select_camera_agent(self, agent_id):
+        self.camera_selected_agent = int(agent_id)
+        self.trainer.set_focus(int(agent_id))
+
+    def _refresh_ghost_camera(self, snapshot):
+        if not hasattr(self, "ghost_camera_canvas"):
+            return
+
+        frame = self.active_ghost_frame
+        for child in frame.winfo_children():
+            child.destroy()
+
+        live = [
+            a for a in self.trainer.telemetry.agents[:self.trainer.agent_count]
+            if a.alive
+        ]
+        if live and self.camera_selected_agent not in [a.agent_id for a in live]:
+            self.camera_selected_agent = live[0].agent_id
+
+        for a in live:
+            selected = a.agent_id == self.camera_selected_agent
+            btn = tk.Button(
+                frame,
+                text=f"AI {a.agent_id:02d}   {a.speed_kmh:.0f} km/h",
+                command=lambda aid=a.agent_id: self._select_camera_agent(aid),
+                relief="sunken" if selected else "raised",
+                bd=2,
+                anchor="w",
+            )
+            btn.pack(fill="x", pady=2)
+
+        if not live:
+            self.camera_selected_agent = 0
+            self.ghost_camera_canvas.delete("all")
+            self.ghost_camera_canvas.create_text(
+                20, 20, anchor="nw",
+                text="NO ACTIVE GHOSTS",
+                fill="white",
+                font=("Segoe UI", 16, "bold"),
+            )
+            self.camera_agent_label.config(text="No live ghost")
+            self.camera_stats.config(state="normal")
+            self.camera_stats.delete("1.0", "end")
+            self.camera_stats.insert("end", "No active agents in this generation.")
+            self.camera_stats.config(state="disabled")
+            return
+
+        selected = next(
+            (a for a in live if a.agent_id == self.camera_selected_agent),
+            live[0],
+        )
+        self.camera_selected_agent = selected.agent_id
+
+        self.camera_agent_label.config(
+            text=f"AI {selected.agent_id:02d} — LIVE"
+        )
+        self.camera_stats.config(state="normal")
+        self.camera_stats.delete("1.0", "end")
+        avg = selected.average_speed
+        fitness = self.trainer.engine.fitness(
+            selected.forward_progress, avg, selected.wall_penalty
+        )
+        self.camera_stats.insert(
+            "end",
+            f"Generation: {self.trainer.engine.generation}\n"
+            f"Status: ACTIVE / TRAINING\n"
+            f"Speed: {selected.speed_kmh:.1f} km/h\n"
+            f"Average speed: {avg:.1f} km/h\n"
+            f"Distance: {selected.distance:.2f} m\n"
+            f"Forward progress: {selected.forward_progress:.2f} m\n"
+            f"Fitness: {fitness:.2f}\n"
+            f"Steer: {selected.last_steer:+.3f}\n"
+            f"Throttle/brake: {selected.last_gas:+.3f}\n"
+            f"Yaw: {selected.yaw_pitch_roll[0]:+.3f} rad\n"
+            f"Wall penalty: {selected.wall_penalty:.2f}\n"
+            f"Alive time: {selected.race_time_ms / 1000.0:.2f} s\n"
+        )
+        self.camera_stats.config(state="disabled")
+
+        self.ghost_overlay.draw_selected_camera(
+            self.ghost_camera_canvas,
+            selected,
+            live,
+        )
 
     def _build_replay(self):
         bar=ttk.Frame(self.replay_tab,padding=8); bar.pack(fill="x")
@@ -266,7 +392,7 @@ class ControlCenter:
             for key in ("speed","distance","fitness","avg","lap","wall","front","left","right"):
                 val=a[key]; getattr(self,key+"_label").config(text=f"{key}: {val:.2f}" if isinstance(val,float) else f"{key}: {val}")
             self.stats.delete("1.0","end"); self.stats.insert("end",f"Generation: {s['generation']}\nBest fitness: {s['best']:.3f}\nMean fitness: {s['mean']:.3f}\nActive: {s['active']}/50\nTraining ticks: {s.get('ticks',0)}\nGame speed: {s['speed_factor']}x\nMap: {self.trainer.map_name}\nLast error: {s.get('last_error','')}\nFocused command: steer={a['steer']:+.3f}, gas={a['gas']:+.3f}\nLap: {a['lap']}  Lap time: {a['lap_time']:.3f}s\nCheckpoints: {a['checkpoints']}\n")
-            self.ghost_overlay._draw_camera_wall(s); self._draw_replay(); self._capture_game()
+            self._refresh_ghost_camera(s); self._draw_replay(); self._capture_game()
             cpu=s.get('cpu_usage')
             if hasattr(self,'cpu_status'):
                 self.cpu_status.config(text=f"CPU: {cpu:.1f}%  |  ghosts: {s['agent_count']}  |  adaptive: {'ON' if s.get('adaptive_cpu') else 'OFF'}" if cpu is not None else "CPU: measuring...")
