@@ -282,7 +282,9 @@ class GhostOverlay:
         self.wall_canvas.configure(scrollregion=(0, 0, cols * tile_w, max(tile_h, math.ceil(len(live) / cols) * tile_h)))
 
 
-    def _draw_car(self, x, y, size, alive, agent_id, steer):
+    def _draw_car(self, x, y, size, alive, agent_id, steer, canvas=None):
+        if canvas is None:
+            canvas = self.canvas
         color = "#9fe8ff" if alive else "#666666"
         outline = "#ffffff" if agent_id == self.trainer.focus else "#69b8cc"
 
@@ -328,6 +330,82 @@ class GhostOverlay:
                 fill="white",
                 font=("Consolas", 8, "bold"),
             )
+
+    def draw_selected_camera(self, canvas, camera_agent, live_agents):
+        """Render the selected ghost's simulated perspective camera."""
+        canvas.delete("all")
+        width = max(500, canvas.winfo_width())
+        height = max(350, canvas.winfo_height())
+
+        yaw = float(self.trainer.simulator.start_yaw + camera_agent.yaw_pitch_roll[0])
+        camera_pos = (
+            float(camera_agent.position[0]),
+            float(camera_agent.position[1]) + 1.45,
+            float(camera_agent.position[2]),
+        )
+
+        horizon = int(height * 0.43)
+        canvas.create_rectangle(0, 0, width, horizon, fill="#17212b", outline="")
+        canvas.create_rectangle(0, horizon, width, height, fill="#11161b", outline="")
+
+        cx = width * 0.5
+        canvas.create_polygon(
+            cx - width * 0.045, height,
+            cx + width * 0.045, height,
+            cx + width * 0.012, horizon,
+            cx - width * 0.012, horizon,
+            fill="#343b42", outline="",
+        )
+
+        for sign in (-1, 1):
+            canvas.create_line(
+                cx + sign * width * 0.045, height,
+                cx + sign * width * 0.012, horizon,
+                fill="#aab3ba",
+                width=2,
+            )
+
+        for i in range(5):
+            y = horizon + 25 + i * 45
+            if y < height:
+                half = 3 + i * 2
+                canvas.create_rectangle(
+                    cx - half, y, cx + half, y + 14,
+                    fill="#d9dde0", outline="",
+                )
+
+        for other in live_agents:
+            if other is camera_agent:
+                continue
+            projected = self._project(
+                other.position,
+                camera_pos,
+                yaw,
+                0.0,
+                width,
+                height,
+                90.0,
+            )
+            if projected is None:
+                continue
+            px, py, depth = projected
+            size = max(6.0, min(70.0, 850.0 / max(depth, 3.0)))
+            self._draw_car(
+                px, py, size, True, other.agent_id, other.last_steer, canvas=canvas
+            )
+
+        canvas.create_text(
+            12, 12, anchor="nw",
+            text=f"AI {camera_agent.agent_id:02d} CAMERA  |  {camera_agent.speed_kmh:.0f} km/h",
+            fill="white",
+            font=("Segoe UI", 13, "bold"),
+        )
+        canvas.create_text(
+            12, 38, anchor="nw",
+            text="SIMULATED FIRST-PERSON / CHASE VIEW",
+            fill="#9fe8ff",
+            font=("Consolas", 9, "bold"),
+        )
 
     def update(self):
         if not self.visible:
