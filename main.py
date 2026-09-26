@@ -119,6 +119,23 @@ class Trainer(Client):
     def on_client_exception(self, iface, exception):
         LOG.error("TMInterface exception: %s", exception)
 
+    def on_checkpoint_count_changed(self, iface, current: int, target: int):
+        with self.lock:
+            if not self.initialized:
+                return
+            agent = self.telemetry.agents[self.current_agent]
+            if current > len(agent.checkpoint_times):
+                agent.checkpoint_changed(agent.race_time_ms)
+
+    def on_laps_count_changed(self, iface, current: int):
+        with self.lock:
+            if not self.initialized:
+                return
+            self.telemetry.agents[self.current_agent].lap_changed(
+                int(current),
+                self.telemetry.agents[self.current_agent].race_time_ms,
+            )
+
     # ---------- initialization / persistence ----------
 
     def _load_persisted_population(self):
