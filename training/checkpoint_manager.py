@@ -26,7 +26,7 @@ class CheckpointManager:
             if tmp.exists():
                 tmp.unlink()
 
-    def save_population(self, population, generation: int, best_score: float, map_name: str, start_state: bytes = b""):
+    def save_population(self, population, generation: int, best_score: float, map_name: str, start_state: bytes = b"", active_count: int = 2, sim_speed: float = 1.0):
         with self.lock:
             self._atomic_npz(
                 self.root / "population.npz",
@@ -35,6 +35,9 @@ class CheckpointManager:
                 best_score=np.asarray([best_score], np.float64),
                 map_name=np.asarray([map_name], dtype="U512"),
                 start_state=np.frombuffer(start_state or b"", np.uint8),
+                active_count=np.asarray([active_count], np.int64),
+                sim_speed=np.asarray([sim_speed], np.float64),
+                checkpoint_time=np.asarray([np.datetime64("now").astype("datetime64[ms]").astype(np.int64)], np.int64),
             )
 
     def save_agent(self, agent, genome):
@@ -75,6 +78,8 @@ class CheckpointManager:
                 "best_score": float(data["best_score"][0]),
                 "map_name": str(data["map_name"][0]),
                 "start_state": bytes(np.asarray(data["start_state"], np.uint8).tobytes()),
+                "active_count": int(data["active_count"][0]) if "active_count" in data else 2,
+                "sim_speed": float(data["sim_speed"][0]) if "sim_speed" in data else 1.0,
             }
 
     def load_agent(self, agent):
@@ -105,6 +110,39 @@ class CheckpointManager:
             agent.history_gas = data["history_gas"].astype(np.float32).tolist()
         return True
 
-    def manifest(self, generation: int, map_name: str):
-        payload = {"generation": generation, "map_name": map_name}
+    def save_quick_training(self, population, generation: int, best_score: float, map_name: str, active_count: int, sim_speed: float):
+        with self.lock:
+            self._atomic_npz(
+                self.root / "training_checkpoint.npz",
+                population=np.asarray(population, np.float32),
+                generation=np.asarray([generation], np.int64),
+                best_score=np.asarray([best_score], np.float64),
+                map_name=np.asarray([map_name], dtype="U512"),
+                active_count=np.asarray([active_count], np.int64),
+                sim_speed=np.asarray([sim_speed], np.float64),
+                checkpoint_time=np.asarray([np.datetime64("now").astype("datetime64[ms]").astype(np.int64)], np.int64),
+            )
+
+    def load_quick_training(self):
+        path = self.root / "training_checkpoint.npz"
+        if not path.exists():
+            return None
+        with np.load(path, allow_pickle=False) as data:
+            return {
+                "population": np.asarray(data["population"], np.float32),
+                "generation": int(data["generation"][0]),
+                "best_score": float(data["best_score"][0]),
+                "map_name": str(data["map_name"][0]),
+                "active_count": int(data["active_count"][0]),
+                "sim_speed": float(data["sim_speed"][0]),
+                "checkpoint_time": int(data["checkpoint_time"][0]),
+            }
+
+    def manifest(self, generation: int, map_name: str, active_count: int = 2, sim_speed: float = 1.0):
+        payload = {
+            "generation": generation,
+            "map_name": map_name,
+            "active_count": int(active_count),
+            "sim_speed": float(sim_speed),
+        }
         (self.root / "manifest.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
