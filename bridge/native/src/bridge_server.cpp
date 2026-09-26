@@ -1,6 +1,7 @@
 #include "bridge_server.h"
 
 #include <cstring>
+#include <cstdlib>
 #include <sstream>
 #include <vector>
 
