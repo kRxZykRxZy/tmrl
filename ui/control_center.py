@@ -20,6 +20,7 @@ class ControlCenter:
         self.replay_index = 0
         self.replay_playing = False
         self.live_photo = None
+        self.last_sweep = 0.0
         self._build()
         self.root.after(100, self.refresh)
 
@@ -151,13 +152,20 @@ class ControlCenter:
 
     def _capture_game(self):
         hwnd=self.trainer.find_game_window()
-        if not hwnd:return
+        if not hwnd:
+            self.live_label.configure(image="", text="TMNF live camera — game window not found")
+            return
         try:
-            rect=wintypes.RECT(); ctypes.windll.user32.GetWindowRect(hwnd,ctypes.byref(rect))
+            rect=wintypes.RECT()
+            ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            if rect.right <= rect.left or rect.bottom <= rect.top:
+                return
             img=ImageGrab.grab(bbox=(rect.left,rect.top,rect.right,rect.bottom),all_screens=True)
             img.thumbnail((900,620))
-            self.live_photo=ImageTk.PhotoImage(img.convert("RGB")); self.live_label.configure(image=self.live_photo,text="")
-        except Exception: pass
+            self.live_photo=ImageTk.PhotoImage(img.convert("RGB"))
+            self.live_label.configure(image=self.live_photo,text="")
+        except Exception as exc:
+            self.live_label.configure(image="", text=f"Camera capture error: {exc}")
 
     def _draw_wall(self,snapshot):
         self.wall_canvas.delete("all"); cols=5; tile_w=126; tile_h=115
