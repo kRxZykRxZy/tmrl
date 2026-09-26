@@ -87,6 +87,7 @@ class Trainer(Client):
         self.last_autosave = 0.0
         self.last_summary = {"generation": 0, "best_fitness": 0.0, "mean_fitness": 0.0, "survival_rate": 0.0}
         self.training_ticks = 0
+        self.last_error = ""
 
         # One saved simulation state and one last-known safe state per logical car.
         self.states: list[bytes | None] = [None] * N
@@ -314,122 +315,129 @@ class Trainer(Client):
         all_dead = self.telemetry.active_count() == 0
         return timeout or all_dead
 
-    def on_run_step(self, iface, _time):
-        with self.lock:
-            if not self.initialized:
-                live = iface.get_simulation_state()
-                self._initialize_from_live_state(live)
-
-            agent_id = self.current_agent
-            agent = self.telemetry.agents[agent_id]
-            state = iface.get_simulation_state()
-
-            # This callback is the post-action state for the current logical car.
-            if self.phase == "advance":
+    def _on_run_step_impl(self, iface, _time):
+            with self.lock:
+                if not self.initialized:
+                    live = iface.get_simulation_state()
+                    self._initialize_from_live_state(live)
+    
+                agent_id = self.current_agent
+                agent = self.telemetry.agents[agent_id]
+                state = iface.get_simulation_state()
+    
+                # This callback is the post-action state for the current logical car.
+                if self.phase == "advance":
+                    blob = serialize_state(state)
+                    self.telemetry.update(agent_id, state, blob)
+                    self.training_ticks += 1
+                    self.states[agent_id] = serialize_state(state)
+                    self._store_progress_state(agent_id, state)
+    
+                    if self._is_bad_state(agent):
+                        self._recover_agent(agent_id)
+    
+                    if self.reset_requested:
+                        self.reset_requested = False
+                        self._reset_all_states()
+                        base = self.generation_start_state
+                        if base is not None:
+                            self.iface.rewind_to_state(deserialize_state(base))
+                        self.phase = "advance"
+                        return
+    
+                    if self._generation_finished():
+                        self._evolve_generation()
+                        base = self.generation_start_state
+                        if base is not None:
+                            self.iface.rewind_to_state(deserialize_state(base))
+                        self.phase = "advance"
+                        self._autosave()
+                        return
+    
+                    if self.replay_active:
+                        self.replay_index += 1
+                        if self.replay_index >= len(agent.history_time):
+                            self.replay_active = False
+                            self.training_enabled = True
+    
+                    self._autosave()
+    
+                    # Advance this logical car with a new action on this callback.
+                    self._issue_action(agent_id)
+                    self.slice_count = 1
+                    self.phase = "post"
+                    return
+    
+                # The previous callback injected the current agent's command. We now
+                # Retain state. Run several physics ticks before switching trajectories.
                 blob = serialize_state(state)
                 self.telemetry.update(agent_id, state, blob)
                 self.training_ticks += 1
                 self.states[agent_id] = serialize_state(state)
                 self._store_progress_state(agent_id, state)
-
+    
                 if self._is_bad_state(agent):
                     self._recover_agent(agent_id)
-
+                    self.current_agent = agent_id
+                    self.slice_count = 0
+                    self.phase = "advance"
+                    return
+    
                 if self.reset_requested:
                     self.reset_requested = False
                     self._reset_all_states()
                     base = self.generation_start_state
                     if base is not None:
-                        self.iface.rewind_to_state(deserialize_state(base))
+                        restored = deserialize_state(base)
+                        if restored is not None:
+                            self.iface.rewind_to_state(restored)
                     self.phase = "advance"
                     return
-
+    
                 if self._generation_finished():
                     self._evolve_generation()
                     base = self.generation_start_state
                     if base is not None:
-                        self.iface.rewind_to_state(deserialize_state(base))
+                        restored = deserialize_state(base)
+                        if restored is not None:
+                            self.iface.rewind_to_state(restored)
                     self.phase = "advance"
-                    self._autosave()
                     return
-
-                if self.replay_active:
-                    self.replay_index += 1
-                    if self.replay_index >= len(agent.history_time):
-                        self.replay_active = False
-                        self.training_enabled = True
-
-                self._autosave()
-
-                # Advance this logical car with a new action on this callback.
-                self._issue_action(agent_id)
-                self.slice_count = 1
-                self.phase = "post"
-                return
-
-            # The previous callback injected the current agent's command. We now
-            # Retain state. Run several physics ticks before switching trajectories.
-            blob = serialize_state(state)
-            self.telemetry.update(agent_id, state, blob)
-            self.training_ticks += 1
-            self.states[agent_id] = serialize_state(state)
-            self._store_progress_state(agent_id, state)
-
-            if self._is_bad_state(agent):
-                self._recover_agent(agent_id)
-                self.current_agent = agent_id
-                self.slice_count = 0
-                self.phase = "advance"
-                return
-
-            if self.reset_requested:
-                self.reset_requested = False
-                self._reset_all_states()
-                base = self.generation_start_state
-                if base is not None:
-                    restored = deserialize_state(base)
+    
+                if self.slice_count < self.slice_ticks and self.camera_request is None:
+                    self.slice_count += 1
+                    self._issue_action(agent_id)
+                    self.phase = "post"
+                    return
+    
+                if self.single_agent_mode:
+                    next_agent = self.focus
+                else:
+                    next_agent = (agent_id + 1) % N
+    
+                # A requested camera focus changes which logical state gets rendered next.
+                if self.camera_request is not None:
+                    requested = int(self.camera_request)
+                    if 0 <= requested < N:
+                        next_agent = requested
+                    self.camera_request = None
+    
+                next_state = self.states[next_agent] or self.generation_start_state
+                if next_state is not None:
+                    self.current_agent = next_agent
+                    restored = deserialize_state(next_state)
                     if restored is not None:
                         self.iface.rewind_to_state(restored)
-                self.phase = "advance"
-                return
-
-            if self._generation_finished():
-                self._evolve_generation()
-                base = self.generation_start_state
-                if base is not None:
-                    restored = deserialize_state(base)
-                    if restored is not None:
-                        self.iface.rewind_to_state(restored)
-                self.phase = "advance"
-                return
-
-            if self.slice_count < self.slice_ticks and self.camera_request is None:
-                self.slice_count += 1
-                self._issue_action(agent_id)
-                self.phase = "post"
-                return
-
-            if self.single_agent_mode:
-                next_agent = self.focus
-            else:
-                next_agent = (agent_id + 1) % N
-
-            # A requested camera focus changes which logical state gets rendered next.
-            if self.camera_request is not None:
-                requested = int(self.camera_request)
-                if 0 <= requested < N:
-                    next_agent = requested
-                self.camera_request = None
-
-            next_state = self.states[next_agent] or self.generation_start_state
-            if next_state is not None:
-                self.current_agent = next_agent
-                restored = deserialize_state(next_state)
-                if restored is not None:
-                    self.iface.rewind_to_state(restored)
-                self.slice_count = 0
-                self.phase = "advance"
-
+                    self.slice_count = 0
+                    self.phase = "advance"
+    
+    
+    def on_run_step(self, iface, _time):
+        try:
+            self._on_run_step_impl(iface, _time)
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            LOG.exception("on_run_step failure")
     # ---------- UI / controls ----------
 
     def ui_command(self, command, value=None):
@@ -549,6 +557,7 @@ class Trainer(Client):
                 "phase": "PAUSED" if self.paused else ("REPLAY" if self.replay_active else "TRAINING"),
                 "speed_factor": self.game_speed,
                 "ticks": self.training_ticks,
+                "last_error": self.last_error,
             }
 
     def replay_snapshot(self, agent_id):
