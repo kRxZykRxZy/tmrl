@@ -35,6 +35,14 @@ except ImportError as exc:
 ROOT = Path(__file__).resolve().parent
 CFG = json.loads((ROOT / "config" / "hyperparams.json").read_text(encoding="utf-8"))
 MAX_AGENTS = int(CFG["population_size"])
+PLAYER_VEHICLE_ID = "player_car"
+PLAYER_CAMERA_ID = "player_camera"
+
+def ai_vehicle_id(agent_id: int) -> str:
+    return f"ai_thread_{int(agent_id) + 1}"
+
+def ai_camera_id(agent_id: int) -> str:
+    return f"ai_camera_{int(agent_id) + 1}"
 LOG = logging.getLogger("tmrl")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -575,6 +583,9 @@ class Trainer(Client):
                 )
                 agents.append({
                     "id": a.agent_id,
+                    "vehicle_id": a.vehicle_id or ai_vehicle_id(a.agent_id),
+                    "camera_id": a.camera_id or ai_camera_id(a.agent_id),
+                    "camera_target": a.agent_id == self.focus,
                     "alive": a.alive,
                     "speed": a.speed_kmh,
                     "forward_speed": a.forward_speed_kmh,
@@ -621,6 +632,9 @@ class Trainer(Client):
                 "last_error": self.last_error,
                 "player_control": "OFF — ghost-only",
                 "ghost_render": "ON",
+                "player_vehicle_id": PLAYER_VEHICLE_ID,
+                "player_camera_id": PLAYER_CAMERA_ID,
+                "camera_mode": "native_per_vehicle_pending",
             }
 
     def save_and_stop(self):
