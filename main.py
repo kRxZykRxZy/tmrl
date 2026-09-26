@@ -77,6 +77,7 @@ class Trainer(Client):
         self.cpu_usage = None
         self.cpu_monitor = CPUUsage()
         self.last_cpu_scale = time.monotonic()
+        self.last_cpu_sample = 0.0
         self.pending_agent_count = self.agent_count
 
         # This factor only affects the detached simulator. It never changes
@@ -310,9 +311,14 @@ class Trainer(Client):
 
     def _sample_cpu_and_maybe_scale(self, force=False):
         now = time.monotonic()
-        usage = self.cpu_monitor.sample()
-        if usage is not None:
-            self.cpu_usage = usage
+
+        # Sampling Windows system CPU once per second is plenty for adaptive
+        # scaling and keeps this path effectively free at 60+ physics callbacks.
+        if force or now - self.last_cpu_sample >= 1.0:
+            usage = self.cpu_monitor.sample()
+            self.last_cpu_sample = now
+            if usage is not None:
+                self.cpu_usage = usage
 
         if not self.adaptive_cpu:
             return
