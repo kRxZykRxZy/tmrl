@@ -35,5 +35,7 @@
   "cpu_min_agents": 2,
   "cpu_max_agents": 20,
   "cpu_scale_step": 2,
-  "cpu_scale_interval_seconds": 5
+  "cpu_scale_interval_seconds": 5,
+  "quick_checkpoint_seconds": 2,
+  "full_checkpoint_seconds": 30
 }
