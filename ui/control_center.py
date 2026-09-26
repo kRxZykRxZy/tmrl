@@ -76,53 +76,309 @@ class ControlCenter:
         self.tree.pack(fill="both",expand=True); self.tree.bind("<<TreeviewSelect>>",self._select_agent)
 
     def _build_camera(self):
-        left = ttk.Frame(self.camera_tab, padding=8)
-        left.pack(side="left", fill="both", expand=True)
-        right = ttk.Frame(self.camera_tab, padding=8, width=310)
+        # The wall shows real pixels captured from the TMNF window.
+        # It deliberately does not fabricate a road/sky scene for the wall.
+        outer = ttk.Frame(self.camera_tab, padding=8)
+        outer.pack(fill="both", expand=True)
+
+        header = ttk.Frame(outer)
+        header.pack(fill="x", pady=(0, 6))
+        ttk.Label(
+            header,
+            text="LIVE TMNF GAMEPLAY — AI CAMERA WALL",
+            font=("Segoe UI", 12, "bold"),
+        ).pack(side="left")
+        self.wall_status = ttk.Label(
+            header,
+            text="Waiting for TMNF window...",
+        )
+        self.wall_status.pack(side="right")
+
+        body = ttk.Frame(outer)
+        body.pack(fill="both", expand=True)
+
+        wall_frame = ttk.Frame(body)
+        wall_frame.pack(side="left", fill="both", expand=True)
+
+        self.wall_canvas = tk.Canvas(
+            wall_frame,
+            bg="#080b0f",
+            highlightthickness=0,
+        )
+        self.wall_scroll = ttk.Scrollbar(
+            wall_frame,
+            orient="vertical",
+            command=self.wall_canvas.yview,
+        )
+        self.wall_canvas.configure(yscrollcommand=self.wall_scroll.set)
+        self.wall_scroll.pack(side="right", fill="y")
+        self.wall_canvas.pack(side="left", fill="both", expand=True)
+
+        self.wall_inner = ttk.Frame(self.wall_canvas)
+        self.wall_window = self.wall_canvas.create_window(
+            (0, 0),
+            window=self.wall_inner,
+            anchor="nw",
+        )
+        self.wall_inner.bind(
+            "<Configure>",
+            lambda _e: self.wall_canvas.configure(
+                scrollregion=self.wall_canvas.bbox("all")
+            ),
+        )
+        self.wall_canvas.bind(
+            "<Configure>",
+            lambda e: self.wall_canvas.itemconfigure(
+                self.wall_window,
+                width=max(e.width, 700),
+            ),
+        )
+
+        right = ttk.Frame(body, padding=(8, 0, 0, 0), width=300)
         right.pack(side="right", fill="y")
         right.pack_propagate(False)
 
         ttk.Label(
-            left,
-            text="Ghost camera — selected AI's simulated first-person/chase view",
-            anchor="w",
-            font=("Segoe UI", 12, "bold"),
-        ).pack(fill="x", pady=(0, 5))
-        self.ghost_camera_canvas = tk.Canvas(
-            left, bg="#080b0f", highlightthickness=0
-        )
-        self.ghost_camera_canvas.pack(fill="both", expand=True)
-
-        ttk.Label(
             right,
-            text="ACTIVE GHOSTS",
+            text="SELECT AI",
             font=("Segoe UI", 12, "bold"),
         ).pack(anchor="w", pady=(0, 6))
+
         self.active_ghost_frame = ttk.Frame(right)
         self.active_ghost_frame.pack(fill="x")
 
         ttk.Separator(right).pack(fill="x", pady=10)
         self.camera_agent_label = ttk.Label(
-            right, text="Select a live ghost", font=("Segoe UI", 12, "bold")
+            right,
+            text="Select a live ghost",
+            font=("Segoe UI", 12, "bold"),
         )
         self.camera_agent_label.pack(anchor="w", pady=3)
+
         self.camera_stats = tk.Text(
-            right, height=14, width=32,
-            bg="#101318", fg="#e8edf2",
+            right,
+            height=18,
+            width=32,
+            bg="#101318",
+            fg="#e8edf2",
             insertbackground="white",
             state="disabled",
         )
         self.camera_stats.pack(fill="x", pady=4)
+
         ttk.Label(
             right,
-            text="Click an ACTIVE ghost to view its camera.\n"
-                 "The view is generated from that ghost's simulated position, "
-                 "yaw and speed, including other visible AI cars.",
+            text=(
+                "Each tile contains the actual TMNF gameplay frame captured "
+                "from the game window. AI telemetry and the selected car are "
+                "shown on top of the real frame. Click an AI to focus it."
+            ),
             wraplength=280,
         ).pack(anchor="w", pady=8)
 
         self.camera_selected_agent = 0
+        self.wall_photos = []
+        self.wall_last_capture = 0.0
+        self.wall_capture_interval = 0.20
+        self.wall_frame_image = None
 
+    def _select_camera_agent(self, agent_id):
+        self.camera_selected_agent = int(agent_id)
+        self.trainer.set_focus(int(agent_id))
+
+    def _capture_tm_gameplay(self):
+        """Capture the real TMNF window; return a PIL image or None."""
+        try:
+            hwnd = self.trainer.find_game_window()
+            if not hwnd:
+                return None
+
+            user32 = ctypes.windll.user32
+            rect = wintypes.RECT()
+            if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return None
+
+            left, top = int(rect.left), int(rect.top)
+            right, bottom = int(rect.right), int(rect.bottom)
+            if right <= left or bottom <= top:
+                return None
+
+            # ImageGrab captures the rendered TMNF window, not our synthetic
+            # simulator. The Control Center itself is outside this rectangle.
+            return ImageGrab.grab(
+                bbox=(left, top, right, bottom),
+                include_layered_windows=True,
+            ).convert("RGB")
+        except Exception:
+            return None
+
+    def _make_wall_tile(self, parent, image, agent):
+        selected = agent.agent_id == self.camera_selected_agent
+        tile = tk.Frame(
+            parent,
+            bg="#0d1117",
+            highlightthickness=3 if selected else 1,
+            highlightbackground="#4fc3f7" if selected else "#30363d",
+            bd=0,
+        )
+        tile.pack_propagate(False)
+        tile.configure(width=330, height=225)
+
+        # Keep the complete gameplay frame visible, with no fake camera scene.
+        tile_image = ImageTk.PhotoImage(image)
+        label = tk.Label(
+            tile,
+            image=tile_image,
+            bg="#000000",
+            bd=0,
+            cursor="hand2",
+        )
+        label.image = tile_image
+        label.pack(fill="both", expand=True)
+
+        def select(_event=None, aid=agent.agent_id):
+            self._select_camera_agent(aid)
+
+        label.bind("<Button-1>", select)
+        tile.bind("<Button-1>", select)
+
+        overlay = tk.Label(
+            tile,
+            text=(
+                f"AI {agent.agent_id:02d}  |  "
+                f"{agent.speed_kmh:.0f} km/h\n"
+                f"FIT {self.trainer.engine.fitness(agent.forward_progress, agent.average_speed, agent.wall_penalty):.1f}"
+            ),
+            justify="left",
+            anchor="nw",
+            bg="#000000",
+            fg="#ffffff",
+            padx=6,
+            pady=4,
+            font=("Consolas", 9, "bold"),
+        )
+        overlay.place(x=5, y=5)
+        overlay.bind("<Button-1>", select)
+
+        return tile_image
+
+    def _refresh_ghost_camera(self, snapshot):
+        if not hasattr(self, "wall_inner"):
+            return
+
+        live = [
+            a for a in self.trainer.telemetry.agents[:self.trainer.agent_count]
+            if a.alive
+        ]
+
+        if live and self.camera_selected_agent not in [a.agent_id for a in live]:
+            self.camera_selected_agent = live[0].agent_id
+
+        # Active-agent selector on the right.
+        for child in self.active_ghost_frame.winfo_children():
+            child.destroy()
+
+        for a in live:
+            selected = a.agent_id == self.camera_selected_agent
+            btn = tk.Button(
+                self.active_ghost_frame,
+                text=f"AI {a.agent_id:02d}   {a.speed_kmh:.0f} km/h",
+                command=lambda aid=a.agent_id: self._select_camera_agent(aid),
+                relief="sunken" if selected else "raised",
+                bd=2,
+                anchor="w",
+            )
+            btn.pack(fill="x", pady=2)
+
+        if not live:
+            self.camera_selected_agent = 0
+            for child in self.wall_inner.winfo_children():
+                child.destroy()
+            self.wall_status.config(text="No active AI ghosts")
+            self.camera_agent_label.config(text="No live ghost")
+            self.camera_stats.config(state="normal")
+            self.camera_stats.delete("1.0", "end")
+            self.camera_stats.insert("end", "No active agents in this generation.")
+            self.camera_stats.config(state="disabled")
+            self.wall_photos = []
+            return
+
+        selected = next(
+            (a for a in live if a.agent_id == self.camera_selected_agent),
+            live[0],
+        )
+        self.camera_selected_agent = selected.agent_id
+
+        # Stats are still per simulated AI, while the image itself is real TMNF.
+        self.camera_agent_label.config(text=f"AI {selected.agent_id:02d} — LIVE")
+        self.camera_stats.config(state="normal")
+        self.camera_stats.delete("1.0", "end")
+        avg = selected.average_speed
+        fitness = self.trainer.engine.fitness(
+            selected.forward_progress,
+            avg,
+            selected.wall_penalty,
+        )
+        self.camera_stats.insert(
+            "end",
+            f"Generation: {self.trainer.engine.generation}\n"
+            f"Status: ACTIVE / TRAINING\n"
+            f"Speed: {selected.speed_kmh:.1f} km/h\n"
+            f"Average speed: {avg:.1f} km/h\n"
+            f"Distance: {selected.distance:.2f} m\n"
+            f"Forward progress: {selected.forward_progress:.2f} m\n"
+            f"Fitness: {fitness:.2f}\n"
+            f"Steer: {selected.last_steer:+.3f}\n"
+            f"Throttle/brake: {selected.last_gas:+.3f}\n"
+            f"Yaw: {selected.yaw_pitch_roll[0]:+.3f} rad\n"
+            f"Wall penalty: {selected.wall_penalty:.2f}\n"
+            f"Alive time: {selected.race_time_ms / 1000.0:.2f} s\n"
+        )
+        self.camera_stats.config(state="disabled")
+
+        now = time.monotonic()
+        if now - self.wall_last_capture < self.wall_capture_interval:
+            return
+        self.wall_last_capture = now
+
+        frame = self._capture_tm_gameplay()
+        if frame is None:
+            self.wall_status.config(text="TMNF window not found / capture unavailable")
+            return
+
+        # Resize the real game frame once, then reuse it for all AI tiles.
+        tile_w, tile_h = 324, 182
+        scale = min(tile_w / frame.width, tile_h / frame.height)
+        resized = frame.resize(
+            (max(1, int(frame.width * scale)), max(1, int(frame.height * scale)))
+        )
+        tile_image = Image.new("RGB", (tile_w, tile_h), "black")
+        tile_image.paste(
+            resized,
+            ((tile_w - resized.width) // 2, (tile_h - resized.height) // 2),
+        )
+
+        for child in self.wall_inner.winfo_children():
+            child.destroy()
+
+        cols = 2 if len(live) <= 4 else 3
+        for col in range(cols):
+            self.wall_inner.columnconfigure(col, weight=1)
+
+        self.wall_photos = []
+        for index, agent in enumerate(live):
+            row, col = divmod(index, cols)
+            tile = self._make_wall_tile(
+                self.wall_inner,
+                tile_image.copy(),
+                agent,
+            )
+            tile.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
+            self.wall_photos.append(tile)
+
+        self.wall_status.config(
+            text=f"REAL TMNF FRAME • {len(live)} active AI • {frame.width}x{frame.height}"
+        )
     def _select_camera_agent(self, agent_id):
         self.camera_selected_agent = int(agent_id)
         self.trainer.set_focus(int(agent_id))
@@ -351,18 +607,6 @@ class ControlCenter:
         try:self.trainer.set_game_speed(float(self.speed_var.get()))
         except ValueError:messagebox.showerror("Speed","Enter a number.")
 
-    def _draw_wall(self,snapshot):
-        self.wall_canvas.delete("all"); cols=5; tile_w=126; tile_h=115
-        for a in snapshot["agents"]:
-            aid=a["id"]; col=aid%cols; row=aid//cols; x=col*tile_w+4; y=row*tile_h+4; sel=aid==snapshot["focus"]
-            self.wall_canvas.create_rectangle(x,y,x+tile_w-8,y+tile_h-8,outline="#4fc3f7" if sel else "#333",width=2)
-            self.wall_canvas.create_text(x+5,y+5,anchor="nw",text=f"#{aid:02d} {'RUN' if a['alive'] else 'DEAD'}",fill="white",font=("Consolas",9))
-            self.wall_canvas.create_text(x+5,y+23,anchor="nw",text=f"{a['speed']:.0f} km/h",fill="#b8d8ff",font=("Consolas",9))
-            self.wall_canvas.create_text(x+5,y+41,anchor="nw",text=f"D {a['distance']:.1f}",fill="white",font=("Consolas",9))
-            self.wall_canvas.create_text(x+5,y+59,anchor="nw",text=f"F {a['fitness']:.1f}",fill="white",font=("Consolas",9))
-            self.wall_canvas.create_rectangle(x+5,y+80,x+tile_w-20,y+88,fill="#222",outline="")
-            self.wall_canvas.create_rectangle(x+5,y+80,x+5+(tile_w-25)*min(1,a['speed']/300),y+88,fill="#66bb6a",outline="")
-
     def refresh(self):
         try:
             s=self.trainer.ui_snapshot(); self.generation.config(text=f"Generation {s['generation']}"); self.best.config(text=f"Best {s['best']:.2f}"); self.active.config(text=f"Ghosts {s['active']}/{s['agent_count']}"); self.phase.config(text=s["phase"])
@@ -370,7 +614,7 @@ class ControlCenter:
             for key in ("speed","distance","fitness","avg","lap","wall","front","left","right"):
                 val=a[key]; getattr(self,key+"_label").config(text=f"{key}: {val:.2f}" if isinstance(val,float) else f"{key}: {val}")
             self.stats.delete("1.0","end"); self.stats.insert("end",f"Generation: {s['generation']}\nBest fitness: {s['best']:.3f}\nMean fitness: {s['mean']:.3f}\nActive: {s['active']}/50\nTraining ticks: {s.get('ticks',0)}\nGame speed: {s['speed_factor']}x\nMap: {self.trainer.map_name}\nLast error: {s.get('last_error','')}\nFocused command: steer={a['steer']:+.3f}, gas={a['gas']:+.3f}\nLap: {a['lap']}  Lap time: {a['lap_time']:.3f}s\nCheckpoints: {a['checkpoints']}\n")
-            self._refresh_ghost_camera(s); self._draw_replay(); self._capture_game()
+            self._refresh_ghost_camera(s); self._draw_replay()
             cpu=s.get('cpu_usage')
             if hasattr(self,'cpu_status'):
                 self.cpu_status.config(text=f"CPU: {cpu:.1f}%  |  ghosts: {s['agent_count']}  |  adaptive: {'ON' if s.get('adaptive_cpu') else 'OFF'}" if cpu is not None else "CPU: measuring...")
