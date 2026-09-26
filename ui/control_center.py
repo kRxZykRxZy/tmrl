@@ -16,8 +16,6 @@ class ControlCenter:
         self.root.minsize(1180, 720)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.focus_agent = 0
-        self.camera_sweep = False
-        self.last_sweep = 0.0
         self.replay_agent = 0
         self.replay_index = 0
         self.replay_playing = False
@@ -180,9 +178,6 @@ class ControlCenter:
             for key in ("speed","distance","fitness","avg","lap","wall","front","left","right"):
                 val=a[key]; getattr(self,key+"_label").config(text=f"{key}: {val:.2f}" if isinstance(val,float) else f"{key}: {val}")
             self.stats.delete("1.0","end"); self.stats.insert("end",f"Generation: {s['generation']}\nBest fitness: {s['best']:.3f}\nMean fitness: {s['mean']:.3f}\nActive: {s['active']}/50\nGame speed: {s['speed_factor']}x\nMap: {self.trainer.map_name}\nFocused command: steer={a['steer']:+.3f}, gas={a['gas']:+.3f}\nLap: {a['lap']}  Lap time: {a['lap_time']:.3f}s\nCheckpoints: {a['checkpoints']}\n")
-            if self.trainer.camera_sweep and time.monotonic() - self.last_sweep >= 0.8:
-                self.last_sweep = time.monotonic()
-                self.trainer.set_focus((s["focus"] + 1) % 50)
             self._draw_wall(s); self._draw_replay(); self._capture_game()
         except Exception: pass
         self.root.after(200,self.refresh)
