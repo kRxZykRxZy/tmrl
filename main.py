@@ -150,23 +150,81 @@ class Trainer(Client):
     # ---------- persistence ----------
 
     def _load_population_checkpoint_only(self):
-        data = self.checkpoints.load_population()
+        data = self.checkpoints.load_quick_training()
+        source = "training_checkpoint.npz"
+
         if data is None:
-            return
+            data = self.checkpoints.load_population()
+            source = "population.npz"
+
+        if data is None:
+            LOG.info("no checkpoint found; starting a new population")
+            return False
 
         pop = data["population"]
-        if pop.shape == self.engine.population.shape:
-            self.engine.population[:] = pop
-            self.engine.generation = data["generation"]
-            self.engine.best_score = data["best_score"]
-            self.map_name = data["map_name"] or self.map_name
-            LOG.info(
-                "loaded population checkpoint at generation %d",
-                self.engine.generation,
+        if pop.shape != self.engine.population.shape:
+            LOG.warning(
+                "checkpoint population shape %s does not match %s; ignoring checkpoint",
+                pop.shape,
+                self.engine.population.shape,
             )
+            return False
 
-        # Intentionally do NOT restore old state blobs here. Those states
-        # belonged to the old one-car rewind architecture.
+        self.engine.population[:] = pop
+        self.engine.generation = int(data["generation"])
+        self.engine.best_score = float(data["best_score"])
+        self.map_name = data["map_name"] or self.map_name
+
+        restored_count = int(data.get("active_count", self.agent_count))
+        self.agent_count = max(1, min(MAX_AGENTS, restored_count))
+        self.pending_agent_count = self.agent_count
+        self.sim_speed = max(0.1, min(2.0, float(data.get("sim_speed", self.sim_speed))))
+        self.simulator.set_active_count(self.agent_count)
+
+        LOG.info(
+            "auto-loaded checkpoint %s at generation %d with %d ghosts",
+            source,
+            self.engine.generation,
+            self.agent_count,
+        )
+        return True
+
+    def load_checkpoint(self):
+        with self.player_lock:
+            loaded = self._load_population_checkpoint_only()
+            if loaded:
+                self.sim_started = False
+                self.generation_started = time.monotonic()
+                self.last_error = ""
+                LOG.info("manual checkpoint load requested")
+            else:
+                self.last_error = "No compatible checkpoint found"
+        return loaded
+
+    def save_quick_checkpoint(self):
+        with self.player_lock:
+            population = self.engine.population.copy()
+            generation = self.engine.generation
+            best = self.engine.best_score
+            map_name = self.map_name
+            active_count = self.agent_count
+            sim_speed = self.sim_speed
+
+        self.executor.submit(
+            self.checkpoints.save_quick_training,
+            population,
+            generation,
+            best,
+            map_name,
+            active_count,
+            sim_speed,
+        )
+        self.checkpoints.manifest(
+            generation,
+            map_name,
+            active_count,
+            sim_speed,
+        )
 
     def save_now(self):
         with self.player_lock:
@@ -174,6 +232,8 @@ class Trainer(Client):
             generation = self.engine.generation
             best = self.engine.best_score
             map_name = self.map_name
+            active_count = self.agent_count
+            sim_speed = self.sim_speed
             agents = [
                 (copy.deepcopy(a), population[a.agent_id].copy())
                 for a in self.telemetry.agents
@@ -185,6 +245,9 @@ class Trainer(Client):
             generation,
             best,
             map_name,
+            b"",
+            active_count,
+            sim_speed,
         )
         for agent, genome in agents:
             self.executor.submit(
@@ -192,15 +255,33 @@ class Trainer(Client):
                 agent,
                 genome,
             )
-        self.checkpoints.manifest(generation, map_name)
+        self.checkpoints.manifest(
+            generation,
+            map_name,
+            active_count,
+            sim_speed,
+        )
 
     def _autosave_loop(self):
-        interval = max(2.0, float(CFG.get("autosave_seconds", 10.0)))
-        while not self.autosave_stop.wait(interval):
+        quick_interval = max(
+            0.5,
+            float(CFG.get("quick_checkpoint_seconds", 2.0)),
+        )
+        full_interval = max(
+            quick_interval,
+            float(CFG.get("full_checkpoint_seconds", 30.0)),
+        )
+        next_full = time.monotonic() + full_interval
+
+        while not self.autosave_stop.wait(quick_interval):
             try:
-                self.save_now()
+                self.save_quick_checkpoint()
+
+                if time.monotonic() >= next_full:
+                    self.save_now()
+                    next_full = time.monotonic() + full_interval
             except Exception:
-                LOG.exception("background autosave failed")
+                LOG.exception("background checkpoint save failed")
 
     # ---------- player sampling ----------
 
@@ -398,6 +479,10 @@ class Trainer(Client):
                         self.last_error = f"map: {type(exc).__name__}: {exc}"
                         LOG.exception("map command failed")
                 self.sim_started = False
+        elif command == "load_checkpoint":
+            self.load_checkpoint()
+        elif command == "save_checkpoint":
+            self.save_now()
         elif command == "replay":
             # Replay remains a UI-only trajectory preview.
             pass
