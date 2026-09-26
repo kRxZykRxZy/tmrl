@@ -341,15 +341,13 @@ class Trainer(Client):
 
     def set_agent_count(self, count):
         count = max(1, min(MAX_AGENTS, int(count)))
+        self.agent_count = count
         self.pending_agent_count = count
-        if not self.sim_started:
-            self.agent_count = count
-            self.simulator.set_active_count(count)
-        else:
-            LOG.info(
-                "ghost count change requested: %d -> %d; applying at next generation",
-                self.agent_count, count,
-            )
+        self.simulator.set_active_count(count)
+        # Restart only the detached AI simulation. TMNF itself is untouched.
+        if self.sim_started:
+            self.sim_started = False
+        LOG.info("manual ghost count changed to %d; restarting detached generation", count)
 
     def set_adaptive_cpu(self, enabled):
         self.adaptive_cpu = bool(enabled)
