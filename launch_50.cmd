@@ -1,70 +1,62 @@
 @echo off
 setlocal EnableExtensions
 
-rem TMRL 50-instance launcher for TMInterface 1.4.3.
+rem TMRL launcher for TMInterface 1.4.3 installed beside TmForever.exe.
 rem
 rem Usage:
-rem   launch_50.cmd "C:\Path\To\TMInterface.exe" "C:\Path\To\TrackMania Nations Forever"
+rem   launch_50.cmd "C:\Program Files (x86)\Steam\steamapps\common\TrackMania Nations Forever"
 rem
-rem Example Steam:
-rem   launch_50.cmd "C:\TMInterface\TMInterface.exe" "C:\Program Files (x86)\Steam\steamapps\common\TrackMania Nations Forever"
-rem
-rem TMInterface.exe and TmForever.exe do NOT have to be in the same directory.
+rem The folder must contain BOTH:
+rem   TMInterface.exe
+rem   TmForever.exe
 
-if not "%~1"=="" set "TMI_EXE=%~1"
-if not "%~2"=="" set "GAME_DIR=%~2"
-
-if not defined TMI_EXE (
-  echo Missing TMInterface.exe path.
-  echo.
-  echo Example:
-  echo   launch_50.cmd "C:\TMInterface\TMInterface.exe" "C:\Program Files (x86)\Steam\steamapps\common\TrackMania Nations Forever"
-  exit /b 2
-)
+if not "%~1"=="" set "GAME_DIR=%~1"
 
 if not defined GAME_DIR (
-  echo Missing TrackMania Nations Forever directory.
+  echo Missing TrackMania Nations Forever folder.
   echo.
-  echo Find it in Steam:
-  echo   Library ^> TrackMania Nations Forever ^> Properties ^> Installed Files ^> Browse
-  echo.
-  echo Then pass the folder containing TmForever.exe as the second argument.
+  echo Example:
+  echo   launch_50.cmd "C:\Program Files (x86)\Steam\steamapps\common\TrackMania Nations Forever"
   exit /b 2
 )
 
-if not exist "%TMI_EXE%" (
+if not exist "%GAME_DIR%\TMInterface.exe" (
   echo TMInterface.exe not found:
-  echo   "%TMI_EXE%"
+  echo   "%GAME_DIR%\TMInterface.exe"
   exit /b 3
 )
 
 if not exist "%GAME_DIR%\TmForever.exe" (
   echo TmForever.exe not found:
   echo   "%GAME_DIR%\TmForever.exe"
-  echo.
-  echo Steam TMNF normally installs the game executable as TmForever.exe.
   exit /b 4
 )
 
-echo TMInterface:
-echo   "%TMI_EXE%"
+echo TMInterface 1.4.3 folder:
+echo   "%GAME_DIR%"
 echo.
-echo TrackMania:
-echo   "%GAME_DIR%\TmForever.exe"
+echo Found:
+echo   TMInterface.exe
+echo   TmForever.exe
 echo.
-echo Launching 50 instances...
+echo Starting 50 instances from the TrackMania directory...
 echo.
+
+pushd "%GAME_DIR%" || exit /b 5
 
 for /L %%N in (0,1,49) do call :launch_one %%N
 
+popd
+
 echo.
 echo Finished sending 50 launch requests.
-echo Verify the instances expose:
+echo.
+echo Verify the TMInterface server names before starting TMRL:
 echo   TMInterface0 ... TMInterface49
 exit /b 0
 
 :launch_one
 echo [%%1] starting
-start "" /D "%GAME_DIR%" "%TMI_EXE%"
+start "" "TMInterface.exe"
 timeout /t 1 /nobreak >nul
 exit /b 0
