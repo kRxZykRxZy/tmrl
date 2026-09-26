@@ -6,6 +6,7 @@ import tkinter as tk
 import time
 from ctypes import wintypes
 from PIL import ImageGrab, ImageTk
+from ui.ghost_overlay import GhostOverlay
 
 class ControlCenter:
     def __init__(self, trainer):
@@ -22,7 +23,9 @@ class ControlCenter:
         self.live_photo = None
         self.last_sweep = 0.0
         self._build()
+        self.ghost_overlay = GhostOverlay(trainer)
         self.root.after(100, self.refresh)
+        self.root.after(33, self.ghost_overlay.update)
 
     def _build(self):
         style = ttk.Style(self.root)
@@ -73,8 +76,8 @@ class ControlCenter:
     def _build_camera(self):
         left=ttk.Frame(self.camera_tab,padding=8); left.pack(side="left",fill="both",expand=True)
         right=ttk.Frame(self.camera_tab,padding=8); right.pack(side="right",fill="y")
-        self.live_label=ttk.Label(left,text="TMNF live camera — waiting for game window...",anchor="center"); self.live_label.pack(fill="both",expand=True)
-        ttk.Label(left,text="Live image is the one rendered car; the right wall represents the 50 logical agents/replay telemetry.").pack(anchor="w")
+        self.live_label=ttk.Label(left,text="TMNF player camera — your car remains yours",anchor="center"); self.live_label.pack(fill="both",expand=True)
+        ttk.Label(left,text="50 detached AI ghost cars are rendered as a click-through overlay. Your TMNF controls are never injected.").pack(anchor="w")
         self.wall_canvas=tk.Canvas(right,width=650,height=720,bg="#0d1117",highlightthickness=0); self.wall_canvas.pack(fill="both",expand=True)
 
     def _build_replay(self):
@@ -98,14 +101,14 @@ class ControlCenter:
     def _build_settings(self):
         frm=ttk.Frame(self.settings_tab,padding=16); frm.pack(anchor="nw")
         self.speed_var=tk.DoubleVar(value=self.trainer.game_speed)
-        ttk.Label(frm,text="TMInterface game speed factor").grid(row=0,column=0,sticky="w")
+        ttk.Label(frm,text="Detached ghost training speed").grid(row=0,column=0,sticky="w")
         ttk.Spinbox(frm,from_=0.25,to=100.0,increment=0.25,textvariable=self.speed_var,width=10).grid(row=0,column=1,padx=8)
         ttk.Button(frm,text="Apply speed",command=self._apply_speed).grid(row=0,column=2)
         self.threads_var=tk.IntVar(value=self.trainer.worker_threads)
         ttk.Label(frm,text="Background checkpoint threads").grid(row=1,column=0,sticky="w")
         ttk.Spinbox(frm,from_=1,to=16,textvariable=self.threads_var,width=10).grid(row=1,column=1,padx=8)
         ttk.Button(frm,text="Apply threads",command=lambda:self.trainer.set_worker_threads(int(self.threads_var.get()))).grid(row=1,column=2)
-        ttk.Label(frm,text="One game process owns the real camera. Virtual agents are multiplexed through saved TMInterface states.").grid(row=2,column=0,columnspan=3,pady=20,sticky="w")
+        ttk.Label(frm,text="PLAYER CONTROL: OFF    |    GHOSTS: 50 detached real-time agents    |    TMNF game speed is untouched").grid(row=2,column=0,columnspan=3,pady=20,sticky="w")
 
     def _select_agent(self,_=None):
         sel=self.tree.selection()
@@ -191,6 +194,10 @@ class ControlCenter:
         self.root.after(200,self.refresh)
 
     def close(self):
-        self.trainer.stop(); self.root.destroy()
+        self.trainer.stop()
+        try:
+            self.ghost_overlay.close()
+        finally:
+            self.root.destroy()
 
     def run(self): self.root.mainloop()
