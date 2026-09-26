@@ -67,7 +67,7 @@ class AgentTelemetry:
         self.velocity[:] = v
         self.yaw_pitch_roll[:] = np.asarray(state.yaw_pitch_roll, np.float64)
         self.race_time_ms = int(state.race_time)
-        self.state_blob = bytes(blob)
+        self.state_blob = blob
         self.max_distance = max(self.max_distance, self.distance)
         self.speed_sum += self.speed_kmh
         self.samples += 1
