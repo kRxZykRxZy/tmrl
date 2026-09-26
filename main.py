@@ -309,9 +309,20 @@ class Trainer(Client):
                 if self._is_bad_state(agent):
                     self._recover_agent(agent_id)
 
+                if self.reset_requested:
+                    self.reset_requested = False
+                    self._reset_all_states()
+                    base = self.generation_start_state
+                    if base is not None:
+                        self.iface.rewind_to_state(clone_state(base))
+                    self.phase = "advance"
+                    return
+
                 if self._generation_finished():
                     self._evolve_generation()
-                    self._issue_action(self.current_agent)
+                    base = self.generation_start_state
+                    if base is not None:
+                        self.iface.rewind_to_state(clone_state(base))
                     self.phase = "advance"
                     self._autosave()
                     return
@@ -339,11 +350,25 @@ class Trainer(Client):
 
             if self._is_bad_state(agent):
                 self._recover_agent(agent_id)
+                self.current_agent = agent_id
+                self.phase = "advance"
+                return
+
+            if self.reset_requested:
+                self.reset_requested = False
+                self._reset_all_states()
+                base = self.generation_start_state
+                if base is not None:
+                    self.iface.rewind_to_state(clone_state(base))
+                self.phase = "advance"
+                return
 
             if self._generation_finished():
                 self._evolve_generation()
-                self._issue_action(self.current_agent)
-                self.phase = "post"
+                base = self.generation_start_state
+                if base is not None:
+                    self.iface.rewind_to_state(clone_state(base))
+                self.phase = "advance"
                 return
 
             if self.single_agent_mode:
@@ -374,9 +399,11 @@ class Trainer(Client):
             elif command == "pause":
                 self.paused = True
             elif command == "retry":
-                self._reset_all_states()
+                self.reset_requested = True
             elif command == "new_race":
                 self.initialized = False
+                for agent in self.telemetry.agents:
+                    agent.state_blob = b""
                 self._safe_tm_command("press delete")
             elif command == "single_agent":
                 self.single_agent_mode = not self.single_agent_mode
@@ -384,6 +411,8 @@ class Trainer(Client):
                 if value:
                     self.map_name = str(value)
                     self._safe_tm_command(f'map "{self.map_name}"')
+                    for agent in self.telemetry.agents:
+                        agent.state_blob = b""
                     self.initialized = False
             elif command == "replay":
                 self.start_replay(int(value) if value is not None else self.focus)
@@ -414,6 +443,10 @@ class Trainer(Client):
             self.training_enabled = not self.replay_active
             self.camera_request = self.replay_agent
             self.current_agent = self.replay_agent
+            if self.replay_active and self.generation_start_state is not None:
+                self.states[self.replay_agent] = clone_state(self.generation_start_state)
+                self.safe_states[self.replay_agent] = clone_state(self.generation_start_state)
+                self.telemetry.agents[self.replay_agent].reset(keep_history=True)
 
     def set_focus(self, agent_id):
         with self.lock:
