@@ -26,7 +26,7 @@ class CheckpointManager:
             if tmp.exists():
                 tmp.unlink()
 
-    def save_population(self, population, generation: int, best_score: float, map_name: str):
+    def save_population(self, population, generation: int, best_score: float, map_name: str, start_state: bytes = b""):
         with self.lock:
             self._atomic_npz(
                 self.root / "population.npz",
@@ -34,6 +34,7 @@ class CheckpointManager:
                 generation=np.asarray([generation], np.int64),
                 best_score=np.asarray([best_score], np.float64),
                 map_name=np.asarray([map_name], dtype="U512"),
+                start_state=np.frombuffer(start_state or b"", np.uint8),
             )
 
     def save_agent(self, agent, genome):
@@ -73,6 +74,7 @@ class CheckpointManager:
                 "generation": int(data["generation"][0]),
                 "best_score": float(data["best_score"][0]),
                 "map_name": str(data["map_name"][0]),
+                "start_state": bytes(np.asarray(data["start_state"], np.uint8).tobytes()),
             }
 
     def load_agent(self, agent):
