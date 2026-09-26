@@ -28,6 +28,7 @@ class GhostOverlay:
     def __init__(self, trainer):
         self.trainer = trainer
         self.root = tk.Toplevel()
+        self.root.withdraw()
         self.root.title("TMRL Ghost Overlay")
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
@@ -74,8 +75,6 @@ class GhostOverlay:
             wintypes.LPARAM,
         )
         self._wndproc = WNDPROC(self._overlay_wndproc)
-        self._old_wndproc = set_style.__self__ if False else None
-
         # Get the existing Tk window procedure and replace it. Keep both the
         # callback and old pointer alive for the lifetime of the overlay.
         get_proc = user32.GetWindowLongPtrW
