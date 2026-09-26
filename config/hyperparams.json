@@ -15,18 +15,18 @@
   "elimination_speed_kmh": 1,
   "server_prefix": "TMInterface",
   "tmi_timeout_ms": 15000,
-  "training_game_speed": 2,
+  "training_game_speed": 1,
   "speed_limit_kmh": 300,
   "position_scale": 1000,
   "worker_threads": 2,
   "autosave_seconds": 10,
-  "stuck_timeout_ms": 1500,
+  "stuck_timeout_ms": 500,
   "stuck_speed_kmh": 1,
   "movement_epsilon": 0.05,
-  "fall_y_min": -40,
+  "fall_y_min": -10,
   "map_abs_coordinate_limit": 5000,
   "safe_state_distance": 2,
   "map_name": "",
   "random_seed": null,
-  "ticks_per_slice": 10
+  "ticks_per_slice": 5
 }
