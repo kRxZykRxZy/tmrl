@@ -253,12 +253,15 @@ class Trainer(Client):
         return agent.race_time_ms - last_movement >= stuck_ms
 
     def _recover_agent(self, agent_id: int):
-        state = self.safe_states[agent_id] or self.states[agent_id] or self.generation_start_state
-        if state is None or self.iface is None:
-            return
+        blob = self.safe_states[agent_id] or self.states[agent_id] or self.generation_start_state
+        if not blob or self.iface is None:
+            return False
+        state = deserialize_state(blob)
+        if state is None:
+            return False
         agent = self.telemetry.agents[agent_id]
         agent.recoveries = getattr(agent, "recoveries", 0) + 1
-        self.iface.rewind_to_state(clone_state(state))
+        self.iface.rewind_to_state(state)
         agent.below_speed_since_ms = -1
         agent.alive = True
         agent.crashed = False
@@ -268,7 +271,7 @@ class Trainer(Client):
         agent = self.telemetry.agents[agent_id]
         min_progress = float(CFG.get("safe_state_distance", 2.0))
         if agent.max_distance - getattr(agent, "_last_safe_distance", -1.0) >= min_progress:
-            self.safe_states[agent_id] = clone_state(state)
+            self.safe_states[agent_id] = serialize_state(state)
             agent._last_safe_distance = agent.max_distance
 
     def _evolve_generation(self):
@@ -295,8 +298,8 @@ class Trainer(Client):
         base = self.generation_start_state
         if base is not None:
             for i, agent in enumerate(self.telemetry.agents):
-                self.states[i] = clone_state(base)
-                self.safe_states[i] = clone_state(base)
+                self.states[i] = base
+                self.safe_states[i] = base
                 agent.reset()
         self.current_agent = self.focus
         self.phase = "advance"
@@ -319,9 +322,10 @@ class Trainer(Client):
 
             # This callback is the post-action state for the current logical car.
             if self.phase == "advance":
-                blob = bytes(state.data)
+                blob = serialize_state(state)
                 self.telemetry.update(agent_id, state, blob)
-                self.states[agent_id] = clone_state(state)
+                self.training_ticks += 1
+                self.states[agent_id] = serialize_state(state)
                 self._store_progress_state(agent_id, state)
 
                 if self._is_bad_state(agent):
@@ -332,7 +336,7 @@ class Trainer(Client):
                     self._reset_all_states()
                     base = self.generation_start_state
                     if base is not None:
-                        self.iface.rewind_to_state(clone_state(base))
+                        self.iface.rewind_to_state(deserialize_state(base))
                     self.phase = "advance"
                     return
 
@@ -361,8 +365,9 @@ class Trainer(Client):
             # The previous callback injected the current agent's command. We now
             # retain the resulting state, then rewind the single game to the next
             # logical agent. rewind_to_state() immediately simulates its next step.
-            blob = bytes(state.data)
+            blob = serialize_state(state)
             self.telemetry.update(agent_id, state, blob)
+            self.training_ticks += 1
             self.states[agent_id] = clone_state(state)
             self._store_progress_state(agent_id, state)
 
@@ -404,7 +409,7 @@ class Trainer(Client):
             next_state = self.states[next_agent] or self.generation_start_state
             if next_state is not None:
                 self.current_agent = next_agent
-                self.iface.rewind_to_state(clone_state(next_state))
+                self.iface.rewind_to_state(deserialize_state(next_state))
                 self.phase = "advance"
 
     # ---------- UI / controls ----------
@@ -446,8 +451,8 @@ class Trainer(Client):
         if self.generation_start_state is None:
             return
         for i, agent in enumerate(self.telemetry.agents):
-            self.states[i] = clone_state(self.generation_start_state)
-            self.safe_states[i] = clone_state(self.generation_start_state)
+            self.states[i] = self.generation_start_state
+            self.safe_states[i] = self.generation_start_state
             agent.reset()
         self.current_agent = self.focus
         self.phase = "advance"
@@ -462,8 +467,8 @@ class Trainer(Client):
             self.camera_request = self.replay_agent
             self.current_agent = self.replay_agent
             if self.replay_active and self.generation_start_state is not None:
-                self.states[self.replay_agent] = clone_state(self.generation_start_state)
-                self.safe_states[self.replay_agent] = clone_state(self.generation_start_state)
+                self.states[self.replay_agent] = self.generation_start_state
+                self.safe_states[self.replay_agent] = self.generation_start_state
                 self.telemetry.agents[self.replay_agent].reset(keep_history=True)
 
     def toggle_camera_sweep(self):
@@ -525,6 +530,7 @@ class Trainer(Client):
                 "agents": agents,
                 "phase": "PAUSED" if self.paused else ("REPLAY" if self.replay_active else "TRAINING"),
                 "speed_factor": self.game_speed,
+                "ticks": self.training_ticks,
             }
 
     def replay_snapshot(self, agent_id):
