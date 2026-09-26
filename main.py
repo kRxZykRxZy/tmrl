@@ -180,14 +180,13 @@ class Trainer(Client):
         self.engine.best_score = float(data["best_score"])
         self.map_name = data["map_name"] or self.map_name
 
-        restored_count = int(data.get("active_count", self.agent_count))
-        self.agent_count = max(1, min(MAX_AGENTS, restored_count))
-        self.pending_agent_count = self.agent_count
-        self.sim_speed = max(0.1, min(2.0, float(data.get("sim_speed", self.sim_speed))))
-        self.simulator.set_active_count(self.agent_count)
-
+        # Checkpoints restore the learned population/training generation,
+        # but deliberately do NOT force a previously-used ghost count. This
+        # prevents a crash-recovery checkpoint made at 20+ ghosts from
+        # immediately reloading an unsafe workload. The current Settings count
+        # remains authoritative.
         LOG.info(
-            "auto-loaded checkpoint %s at generation %d with %d ghosts",
+            "auto-loaded checkpoint %s at generation %d; keeping configured %d ghosts",
             source,
             self.engine.generation,
             self.agent_count,
