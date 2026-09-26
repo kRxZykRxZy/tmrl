@@ -88,9 +88,7 @@ class Trainer(Client):
         self.last_summary = {"generation": 0, "best_fitness": 0.0, "mean_fitness": 0.0, "survival_rate": 0.0}
         self.training_ticks = 0
         self.last_error = ""
-        self.registration_ready = threading.Event()
-        self.registration_setup_started = False
-        self.registration_setup_thread: threading.Thread | None = None
+        self.connection_setup_done = False
 
         # One saved simulation state and one last-known safe state per logical car.
         self.states: list[bytes | None] = [None] * N
@@ -109,6 +107,12 @@ class Trainer(Client):
         self.slice_count = 0
         self.lock = threading.RLock()
         self.autosave_stop = threading.Event()
+        try:
+            self._load_persisted_population()
+        except Exception as exc:
+            self.last_error = f"checkpoint load: {type(exc).__name__}: {exc}"
+            LOG.exception("checkpoint loading failed before TMInterface registration")
+
         self.autosave_thread = threading.Thread(target=self._autosave_loop, name="tmrl-autosave", daemon=True)
         self.autosave_thread.start()
 
@@ -196,34 +200,6 @@ class Trainer(Client):
                 LOG.exception("background autosave failed")
 
     # ---------- simulation ----------
-
-    def _finish_registration_setup(self):
-        try:
-            if self.iface is None:
-                return
-
-            try:
-                self.iface.set_timeout(int(CFG.get("tmi_timeout_ms", 15000)))
-            except Exception:
-                LOG.exception("could not set TMInterface timeout")
-
-            try:
-                self.iface.set_speed(self.game_speed)
-            except Exception:
-                LOG.exception("could not set TMInterface game speed")
-
-            try:
-                self._load_persisted_population()
-            except Exception as exc:
-                self.last_error = f"checkpoint load: {type(exc).__name__}: {exc}"
-                LOG.exception("checkpoint loading failed")
-
-            self.registration_ready.set()
-            LOG.info("TMInterface setup complete; training callbacks enabled")
-        except Exception as exc:
-            self.last_error = f"registration setup: {type(exc).__name__}: {exc}"
-            LOG.exception("deferred registration setup failed")
-            self.registration_ready.set()
 
     def _population_commands(self):
         observations = self.telemetry.observation_matrix(
@@ -348,16 +324,19 @@ class Trainer(Client):
         return timeout or all_dead
 
     def _on_run_step_impl(self, iface, _time):
-            if not self.registration_ready.is_set():
-                if not self.registration_setup_started:
-                    self.registration_setup_started = True
-                    self.registration_setup_thread = threading.Thread(
-                        target=self._finish_registration_setup,
-                        name="tmrl-registration-setup",
-                        daemon=True,
-                    )
-                    self.registration_setup_thread.start()
-                return
+            # Configure TMInterface from its own protocol thread. The legacy
+            # client uses a synchronous mmap protocol, so never call iface
+            # methods from a separate worker thread.
+            if not self.connection_setup_done:
+                try:
+                    iface.set_timeout(int(CFG.get("tmi_timeout_ms", 15000)))
+                    iface.set_speed(self.game_speed)
+                    self.connection_setup_done = True
+                    LOG.info("TMInterface connection setup complete")
+                except Exception as exc:
+                    self.last_error = f"interface setup: {type(exc).__name__}: {exc}"
+                    LOG.exception("TMInterface setup failed")
+                    return
 
             with self.lock:
                 if not self.initialized:
