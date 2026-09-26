@@ -602,7 +602,7 @@ class Trainer(Client):
             self.save_now()
         finally:
             self.running = False
-        self.autosave_stop.set()
+            self.autosave_stop.set()
             self.executor.shutdown(wait=False, cancel_futures=True)
 
     def stop(self):
