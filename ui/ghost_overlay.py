@@ -29,7 +29,7 @@ class GhostOverlay:
         self.trainer = trainer
         self.root = tk.Toplevel()
         self.root.withdraw()
-        self.root.title("TMRL Ghost Overlay")
+        self.root.title("TMRL Ghost Overlay — up to 50")
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
         self.root.attributes("-alpha", 0.72)
@@ -268,7 +268,9 @@ class GhostOverlay:
 
         player = self.trainer.player_snapshot()
         if player is None:
-            self.root.after(33, self.update)
+            count = self.trainer.agent_count
+        interval = 33 if count <= 10 else 50 if count <= 25 else 80
+        self.root.after(interval, self.update)
             return
 
         p = player["position"]
