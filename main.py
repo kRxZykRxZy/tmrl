@@ -214,8 +214,10 @@ class Trainer(Client):
             active_count = self.agent_count
             sim_speed = self.sim_speed
 
-        self.executor.submit(
-            self.checkpoints.save_quick_training,
+        # The quick checkpoint is intentionally written directly here:
+        # it is small, atomic, and this method runs on the background autosave
+        # thread rather than the TMInterface protocol thread.
+        self.checkpoints.save_quick_training(
             population,
             generation,
             best,
