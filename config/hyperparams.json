@@ -28,5 +28,12 @@
   "safe_state_distance": 2,
   "map_name": "",
   "random_seed": null,
-  "ticks_per_slice": 5
+  "ticks_per_slice": 5,
+  "default_agent_count": 2,
+  "adaptive_cpu": false,
+  "cpu_target_percent": 65,
+  "cpu_min_agents": 2,
+  "cpu_max_agents": 20,
+  "cpu_scale_step": 2,
+  "cpu_scale_interval_seconds": 5
 }
