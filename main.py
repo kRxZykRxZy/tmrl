@@ -355,17 +355,14 @@ class Trainer(Client):
                         if base is not None:
                             self.iface.rewind_to_state(deserialize_state(base))
                         self.phase = "advance"
-                        self._autosave()
                         return
-    
+
                     if self.replay_active:
                         self.replay_index += 1
                         if self.replay_index >= len(agent.history_time):
                             self.replay_active = False
                             self.training_enabled = True
-    
-                    self._autosave()
-    
+
                     # Advance this logical car with a new action on this callback.
                     self._issue_action(agent_id)
                     self.slice_count = 1
