@@ -12,7 +12,7 @@ class ControlCenter:
     def __init__(self, trainer):
         self.trainer = trainer
         self.root = tk.Tk()
-        self.root.title("TMRL Control Center — 50 Agent Trainer")
+        self.root.title("TMRL Control Center — Native AI Bridge Trainer")
         self.root.geometry("1450x900")
         self.root.minsize(1180, 720)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
@@ -142,6 +142,59 @@ class ControlCenter:
             command=lambda: self.trainer.set_game_speed(self.speed_var.get()),
         ).pack(side="left", padx=10)
 
+        scale = tk.Frame(self.settings_frame, bg="#0d1117")
+        scale.pack(fill="x", padx=18, pady=12)
+        tk.Label(
+            scale, text="Live AI scaling", bg="#0d1117", fg="#e8edf2",
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w")
+        self.adaptive_var = tk.BooleanVar(value=self.trainer.adaptive_cpu)
+        tk.Checkbutton(
+            scale,
+            text="Adaptive CPU scaling",
+            variable=self.adaptive_var,
+            command=lambda: self.trainer.set_adaptive_cpu(self.adaptive_var.get()),
+            bg="#0d1117", fg="#e8edf2", selectcolor="#182028",
+            activebackground="#0d1117", activeforeground="#e8edf2",
+        ).pack(anchor="w", pady=4)
+
+        scale_row = tk.Frame(scale, bg="#0d1117")
+        scale_row.pack(fill="x", pady=4)
+        tk.Label(scale_row, text="Minimum AI", bg="#0d1117", fg="#e8edf2").pack(side="left")
+        self.min_agents_var = tk.IntVar(value=self.trainer.cpu_min_agents)
+        tk.Spinbox(
+            scale_row, from_=1, to=int(self.trainer.engine.population.shape[0]),
+            width=5, textvariable=self.min_agents_var,
+            command=lambda: self.trainer.set_cpu_min_agents(self.min_agents_var.get()),
+        ).pack(side="left", padx=8)
+        tk.Label(scale_row, text="Maximum AI", bg="#0d1117", fg="#e8edf2").pack(side="left", padx=(20, 0))
+        self.max_agents_var = tk.IntVar(value=self.trainer.cpu_max_agents)
+        tk.Spinbox(
+            scale_row, from_=1, to=int(self.trainer.engine.population.shape[0]),
+            width=5, textvariable=self.max_agents_var,
+            command=lambda: self.trainer.set_cpu_max_agents(self.max_agents_var.get()),
+        ).pack(side="left", padx=8)
+        tk.Label(scale_row, text="Step", bg="#0d1117", fg="#e8edf2").pack(side="left", padx=(20, 0))
+        self.scale_step_var = tk.IntVar(value=self.trainer.cpu_scale_step)
+        tk.Spinbox(scale_row, from_=1, to=10, width=5, textvariable=self.scale_step_var).pack(side="left", padx=8)
+
+        camera = tk.Frame(self.settings_frame, bg="#0d1117")
+        camera.pack(fill="x", padx=18, pady=12)
+        tk.Label(
+            camera, text="Per-car camera", bg="#0d1117", fg="#e8edf2",
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w")
+        tk.Label(
+            camera,
+            text="Player: player_camera   |   AI: ai_camera_1 ... ai_camera_N",
+            bg="#0d1117", fg="#9aa7b2",
+        ).pack(anchor="w", pady=3)
+        tk.Label(
+            camera,
+            text="Selecting an AI will target that AI's native camera once the TMNF bridge is active.",
+            bg="#0d1117", fg="#9aa7b2", wraplength=800, justify="left",
+        ).pack(anchor="w")
+
     def _build_dashboard(self):
         left=ttk.Frame(self.dashboard,padding=12); left.pack(side="left",fill="both",expand=True)
         right=ttk.Frame(self.dashboard,padding=12); right.pack(side="right",fill="y")
@@ -151,9 +204,9 @@ class ControlCenter:
             lab=ttk.Label(right,text=f"{key}: 0"); lab.pack(anchor="w",pady=3); setattr(self,key+"_label",lab)
 
     def _build_agents(self):
-        cols=("id","alive","speed","distance","fitness","lap","lap_time","avg","wall")
+        cols=("id","vehicle_id","alive","speed","distance","fitness","lap","lap_time","avg","wall")
         self.tree=ttk.Treeview(self.agents_tab,columns=cols,show="headings",height=28)
-        names={"id":"Agent","alive":"Alive","speed":"Speed km/h","distance":"Distance","fitness":"Fitness","lap":"Lap","lap_time":"Lap time","avg":"Avg speed","wall":"Wall penalty"}
+        names={"id":"Agent","vehicle_id":"Vehicle ID","alive":"Alive","speed":"Speed km/h","distance":"Distance","fitness":"Fitness","lap":"Lap","lap_time":"Lap time","avg":"Avg speed","wall":"Wall penalty"}
         for c in cols:
             self.tree.heading(c,text=names[c]); self.tree.column(c,width=105,anchor="center")
         self.tree.pack(fill="both",expand=True); self.tree.bind("<<TreeviewSelect>>",self._select_agent)
@@ -344,7 +397,7 @@ class ControlCenter:
         overlay = tk.Label(
             tile,
             text=(
-                f"AI {agent.agent_id:02d}  |  "
+                f"{agent.vehicle_id}  |  "
                 f"{agent.speed_kmh:.0f} km/h\n"
                 f"FIT {self.trainer.engine.fitness(agent.forward_progress, agent.average_speed, agent.wall_penalty):.1f}"
             ),
@@ -381,7 +434,7 @@ class ControlCenter:
             selected = a.agent_id == self.camera_selected_agent
             btn = tk.Button(
                 self.active_ghost_frame,
-                text=f"AI {a.agent_id:02d}   {a.speed_kmh:.0f} km/h",
+                text=f"{a.vehicle_id}   {a.speed_kmh:.0f} km/h",
                 command=lambda aid=a.agent_id: self._select_camera_agent(aid),
                 relief="sunken" if selected else "raised",
                 bd=2,
@@ -409,7 +462,7 @@ class ControlCenter:
         self.camera_selected_agent = selected.agent_id
 
         # Stats are still per simulated AI, while the image itself is real TMNF.
-        self.camera_agent_label.config(text=f"AI {selected.agent_id:02d} — LIVE")
+        self.camera_agent_label.config(text=f"{selected.vehicle_id} — LIVE")
         self.camera_stats.config(state="normal")
         self.camera_stats.delete("1.0", "end")
         avg = selected.average_speed
@@ -420,6 +473,8 @@ class ControlCenter:
         )
         self.camera_stats.insert(
             "end",
+            f"Vehicle: {selected.vehicle_id}\n"
+            f"Camera: {selected.camera_id}\n"
             f"Generation: {self.trainer.engine.generation}\n"
             f"Status: ACTIVE / TRAINING\n"
             f"Speed: {selected.speed_kmh:.1f} km/h\n"
@@ -499,8 +554,8 @@ class ControlCenter:
                 label = tk.Label(
                     tile,
                     text=(
-                        f"AI {agent.agent_id:02d}\n\n"
-                        "LIVE GHOST\n"
+                        f"{agent.vehicle_id}\n\n"
+                        "LIVE AI\n"
                         f"{agent.speed_kmh:.0f} km/h\n"
                         "TMNF FRAME UNAVAILABLE"
                     ),
@@ -533,7 +588,7 @@ class ControlCenter:
         if not hasattr(self, "replay_status"):
             return
         try:
-            snap = self.trainer.replay_snapshot()
+            snap = self.trainer.replay_snapshot(self.replay_agent)
             self.replay_status.config(
                 text=(
                     f"Generation {snap.get('generation', 0)}  |  "
@@ -548,7 +603,7 @@ class ControlCenter:
     def refresh(self):
         try:
             s=self.trainer.ui_snapshot(); self.generation.config(text=f"Generation {s['generation']}"); self.best.config(text=f"Best {s['best']:.2f}"); self.active.config(text=f"Ghosts {s['active']}/{s['agent_count']}"); self.phase.config(text=s["phase"])
-            a=s["focused"]; self.focus_label.config(text=f"Focused agent: {a['id']}")
+            a=s["focused"]; self.focus_label.config(text=f"Focused: {a.get('vehicle_id', 'ai_thread_1')}")
             for key in ("speed","distance","fitness","avg","lap","wall","front","left","right"):
                 val=a[key]; getattr(self,key+"_label").config(text=f"{key}: {val:.2f}" if isinstance(val,float) else f"{key}: {val}")
             self.stats.delete("1.0","end"); self.stats.insert("end",f"Generation: {s['generation']}\nBest fitness: {s['best']:.3f}\nMean fitness: {s['mean']:.3f}\nActive: {s['active']}/50\nTraining ticks: {s.get('ticks',0)}\nGame speed: {s['speed_factor']}x\nMap: {self.trainer.map_name}\nLast error: {s.get('last_error','')}\nFocused command: steer={a['steer']:+.3f}, gas={a['gas']:+.3f}\nLap: {a['lap']}  Lap time: {a['lap_time']:.3f}s\nCheckpoints: {a['checkpoints']}\n")
