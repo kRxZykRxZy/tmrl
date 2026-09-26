@@ -1,109 +1,257 @@
-"""50-agent TMInterface orchestrator.
+"""TMRL 50-instance TMInterface coordinator.
 
-TMInterface's Python API controls one vehicle per server. Therefore 50 simultaneous
-visible agents are represented by 50 concurrent TMNF/TMInterface instances named
-TMInterface0 through TMInterface49.
+The legacy official Python client controls one TMInterface server at a time, but
+its API permits multiple server connections from one process. We therefore run
+one TMNF/TMInterface instance per genome and perform one vectorized population
+inference over the latest 50 observations.
 """
 from __future__ import annotations
-import json,logging,threading,time
+import json, logging, threading, time
 from pathlib import Path
 import numpy as np
+
 from core.network import NeuralNetwork
-from core.evolution import EvolutionEngine,FitnessResult
+from core.evolution import EvolutionEngine, FitnessResult
 from environment.telemetry import TelemetryStore
 from ui.standalone_ui import StandaloneHUD
-try:
- from tminterface.client import Client,run_client
-except ImportError as e: raise SystemExit("Install tminterface==1.0.2") from e
 
-ROOT=Path(__file__).resolve().parent
-CFG=json.loads((ROOT/"config/hyperparams.json").read_text())
-N=int(CFG["population_size"]);PREFIX=CFG.get("server_prefix","TMInterface")
-logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(message)s")
-log=logging.getLogger("tmrl")
+try:
+    from tminterface.client import Client
+    from tminterface.interface import TMInterface
+except ImportError as exc:
+    raise SystemExit("Install the legacy TMInterface client with: python -m pip install tminterface==1.0.2") from exc
+
+ROOT = Path(__file__).resolve().parent
+CFG = json.loads((ROOT / "config" / "hyperparams.json").read_text(encoding="utf-8"))
+POPULATION = int(CFG["population_size"])
+SERVER_PREFIX = str(CFG.get("server_prefix", "TMInterface"))
+TICK_HZ = float(CFG.get("inference_hz", 60.0))
+LOG = logging.getLogger("tmrl")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(threadName)s %(message)s")
 
 class Coordinator:
- def __init__(self):
-  self.telemetry=TelemetryStore(N)
-  self.engine=EvolutionEngine(NeuralNetwork.population(N),int(CFG["elite_count"]),float(CFG["mutation_rate"]),float(CFG["mutation_sigma"]),CFG.get("random_seed"))
-  self.ifaces=[None]*N;self.observations=np.zeros((N,8),np.float32);self.outputs=np.zeros((N,2),np.float32)
-  self.focus=0;self.generation_started=time.monotonic();self.lock=threading.RLock();self.resetting=False
-  self.last_summary={"generation":0,"best_fitness":0.0,"survival_rate":0.0}
+    def __init__(self):
+        self.telemetry = TelemetryStore(POPULATION)
+        self.engine = EvolutionEngine(
+            NeuralNetwork.population(POPULATION, np.random.default_rng(CFG.get("random_seed"))),
+            elite_count=int(CFG["elite_count"]),
+            mutation_rate=float(CFG["mutation_rate"]),
+            mutation_sigma=float(CFG["mutation_sigma"]),
+            seed=CFG.get("random_seed"),
+        )
+        self.interfaces: list[TMInterface | None] = [None] * POPULATION
+        self.observations = np.zeros((POPULATION, 8), dtype=np.float32)
+        self.commands = np.zeros((POPULATION, 2), dtype=np.float32)
+        self.activations = np.zeros((POPULATION, 24), dtype=np.float32)
+        self.focus = 0
+        self.generation_started = time.monotonic()
+        self.generation_lock = threading.RLock()
+        self.inference_condition = threading.Condition()
+        self.running = True
+        self.resetting = False
+        self.last_summary = {"generation": 0, "best_fitness": 0.0, "survival_rate": 0.0}
+        self.inference_thread = threading.Thread(target=self._inference_loop, name="tmrl-inference", daemon=True)
 
- def step(self,i,iface):
-  try:
-   if iface.is_in_menus():return
-   state=iface.get_simulation_state()
-   self.telemetry.update(i,state)
-   with self.lock:
-    self.observations[i]=self.telemetry.agents[i].observation()
-    commands,_,h2=self.engine.batch_forward(self.observations)
-    self.outputs[:]=commands
-    for j,a in enumerate(self.telemetry.agents):a.activations=h2[j]
-    agent=self.telemetry.agents[i]
-    if agent.alive:
-     steer=int(np.clip(commands[i,0],-1,1)*65536)
-     gas=int(np.clip(commands[i,1],-1,1)*65536)
-    else:
-     steer=gas=0
-   iface.set_input_state(sim_clear_buffer=False,steer=steer,gas=gas,accelerate=gas>0,brake=gas<0)
-   self.maybe_evolve()
-  except Exception as e:
-   log.error("agent %02d physics-step failure: %s",i,e)
+    def start(self):
+        self.inference_thread.start()
 
- def maybe_evolve(self):
-  with self.lock:
-   if self.resetting:return
-   timeout=time.monotonic()-self.generation_started>=float(CFG["generation_timeout_seconds"])
-   finished=self.telemetry.active_count()==0
-   if not (timeout or finished):return
-   self.resetting=True
-   try:
-    results=[FitnessResult(self.engine.fitness(a.max_distance,a.average_speed,a.wall_penalty),a.max_distance,a.average_speed,a.wall_penalty,a.alive) for a in self.telemetry.agents]
-    self.last_summary=self.engine.evolve(results)
-    log.info("generation %d best=%.3f survival=%.1f%%",self.engine.generation,self.last_summary["best_fitness"],self.last_summary["survival_rate"]*100)
-    for a in self.telemetry.agents:a.reset()
-    self.observations.fill(0);self.outputs.fill(0);self.generation_started=time.monotonic()
-    for iface in self.ifaces:
-     if iface is not None:
-      try:iface.execute_command("press system retry")
-      except Exception as e:log.warning("retry command failed: %s",e)
-   finally:self.resetting=False
+    def observe(self, agent_id: int, iface: TMInterface):
+        state = iface.get_simulation_state()
+        self.telemetry.update(agent_id, state)
+        with self.inference_condition:
+            self.observations[agent_id] = self.telemetry.observation(agent_id)
+            self.inference_condition.notify()
 
- def snapshot(self):
-  with self.lock:
-   a=self.telemetry.agents[self.focus]
-   return type("Snapshot",(),dict(
-    generation=self.engine.generation,best=self.engine.best_score,active=self.telemetry.active_count(),
-    focus=self.focus,speed=a.speed_kmh,distance=a.max_distance,
-    fitness=self.engine.fitness(a.max_distance,a.average_speed,a.wall_penalty),
-    front=1.,left=1.,right=1.,activations=a.activations.copy()))()
+    def action(self, agent_id: int, iface: TMInterface):
+        with self.inference_condition:
+            command = self.commands[agent_id].copy()
+            alive = self.telemetry.agents[agent_id].alive
+        if alive:
+            steer = int(np.clip(command[0], -1.0, 1.0) * 65536.0)
+            gas = int(np.clip(command[1], -1.0, 1.0) * 65536.0)
+        else:
+            steer = gas = 0
+        iface.set_input_state(
+            sim_clear_buffer=False,
+            steer=steer,
+            gas=gas,
+            accelerate=gas > 0,
+            brake=gas < 0,
+        )
 
- def ui(self,event):
-  if event[0]=="focus_delta":
-   with self.lock:self.focus=(self.focus+int(event[1]))%N
-  return self.snapshot()
+    def _inference_loop(self):
+        period = 1.0 / max(1.0, TICK_HZ)
+        next_tick = time.perf_counter()
+        while self.running:
+            now = time.perf_counter()
+            if now < next_tick:
+                time.sleep(min(next_tick - now, 0.002))
+                continue
+            next_tick += period
+            with self.inference_condition:
+                obs = self.observations.copy()
+            try:
+                out, _h1, h2 = self.engine.batch_forward(obs)
+                with self.inference_condition:
+                    self.commands[:] = out
+                    self.activations[:] = h2
+                    for i, agent in enumerate(self.telemetry.agents):
+                        agent.activations[:] = h2[i]
+            except Exception:
+                LOG.exception("population inference failed")
 
-class Agent(Client):
- def __init__(self,c,i):super().__init__();self.c=c;self.i=i
- def on_registered(self,iface):
-  self.c.ifaces[self.i]=iface;iface.set_speed(1.0);iface.set_timeout(5000)
-  log.info("agent %02d registered",self.i)
- def on_run_step(self,iface,_time):self.c.step(self.i,iface)
- def on_client_exception(self,iface,e):log.error("agent %02d: %s",self.i,e)
- def on_deregistered(self,iface):log.warning("agent %02d disconnected",self.i)
+    def step(self, agent_id: int, iface: TMInterface):
+        try:
+            if iface.is_in_menus():
+                return
+            self.observe(agent_id, iface)
+            self.action(agent_id, iface)
+            self.maybe_end_generation()
+        except Exception:
+            LOG.exception("agent %02d physics callback failed", agent_id)
 
-def worker(c,i):
- name=f"{PREFIX}{i}"
- while True:
-  try:
-   log.info("connecting agent %02d -> %s",i,name);run_client(Agent(c,i),name);return
-  except Exception as e:
-   log.warning("agent %02d unavailable (%s); retrying",i,e);time.sleep(2)
+    def maybe_end_generation(self):
+        with self.generation_lock:
+            if self.resetting:
+                return
+            timeout = time.monotonic() - self.generation_started >= float(CFG["generation_timeout_seconds"])
+            all_crashed = self.telemetry.active_count() == 0
+            if not (timeout or all_crashed):
+                return
+
+            self.resetting = True
+            try:
+                results = []
+                for agent in self.telemetry.agents:
+                    results.append(
+                        FitnessResult(
+                            fitness=self.engine.fitness(
+                                agent.max_distance,
+                                agent.average_speed,
+                                agent.wall_penalty,
+                            ),
+                            distance=agent.max_distance,
+                            average_speed=agent.average_speed,
+                            wall_penalty=agent.wall_penalty,
+                            survived=agent.alive,
+                        )
+                    )
+
+                self.last_summary = self.engine.evolve(results)
+                self.generation_started = time.monotonic()
+
+                LOG.info(
+                    "generation=%d best=%.3f mean=%.3f survival=%.1f%%",
+                    self.last_summary["generation"],
+                    self.last_summary["best_fitness"],
+                    self.last_summary["mean_fitness"],
+                    self.last_summary["survival_rate"] * 100.0,
+                )
+
+                for agent in self.telemetry.agents:
+                    agent.reset()
+
+                with self.inference_condition:
+                    self.observations.fill(0.0)
+                    self.commands.fill(0.0)
+                    self.activations.fill(0.0)
+
+                for iface in self.interfaces:
+                    if iface is None or not iface.running:
+                        continue
+                    try:
+                        iface.execute_command("press system retry")
+                    except Exception:
+                        LOG.exception("generation retry command failed")
+
+            finally:
+                self.resetting = False
+
+    def snapshot(self):
+        with self.generation_lock:
+            agent = self.telemetry.agents[self.focus]
+            return {
+                "generation": self.engine.generation,
+                "best": self.engine.best_score if np.isfinite(self.engine.best_score) else 0.0,
+                "active": self.telemetry.active_count(),
+                "focus": self.focus,
+                "speed": agent.speed_kmh,
+                "distance": agent.max_distance,
+                "fitness": self.engine.fitness(agent.max_distance, agent.average_speed, agent.wall_penalty),
+                "front": agent.lidar[0],
+                "left": agent.lidar[1],
+                "right": agent.lidar[2],
+                "activations": agent.activations.copy(),
+            }
+
+    def ui_event(self, event):
+        if event[0] == "focus_delta":
+            with self.generation_lock:
+                self.focus = (self.focus + int(event[1])) % POPULATION
+        return self.snapshot()
+
+class AgentClient(Client):
+    def __init__(self, coordinator: Coordinator, agent_id: int):
+        super().__init__()
+        self.coordinator = coordinator
+        self.agent_id = agent_id
+
+    def on_registered(self, iface):
+        self.coordinator.interfaces[self.agent_id] = iface
+        iface.set_speed(1.0)
+        iface.set_timeout(int(CFG.get("tmi_timeout_ms", 5000)))
+        LOG.info("agent %02d registered", self.agent_id)
+
+    def on_run_step(self, iface, _time):
+        self.coordinator.step(self.agent_id, iface)
+
+    def on_deregistered(self, iface):
+        LOG.warning("agent %02d deregistered", self.agent_id)
+
+    def on_shutdown(self, iface):
+        LOG.warning("agent %02d server shut down", self.agent_id)
+
+    def on_client_exception(self, iface, exception):
+        LOG.error("agent %02d client exception: %s", self.agent_id, exception)
+
+def connect_agent(coordinator: Coordinator, agent_id: int):
+    server_name = f"{SERVER_PREFIX}{agent_id}"
+    while coordinator.running:
+        iface = TMInterface(server_name)
+        client = AgentClient(coordinator, agent_id)
+        try:
+            LOG.info("connecting agent %02d to %s", agent_id, server_name)
+            iface.register(client)
+            while iface.running and coordinator.running:
+                time.sleep(0.1)
+        except Exception:
+            LOG.exception("agent %02d connection failure", agent_id)
+        finally:
+            try:
+                iface.close()
+            except Exception:
+                pass
+        if coordinator.running:
+            time.sleep(float(CFG.get("reconnect_delay_seconds", 2.0)))
 
 def main():
- c=Coordinator()
- for i in range(N):threading.Thread(target=worker,args=(c,i),name=f"tmrl-{i:02d}",daemon=True).start()
- StandaloneHUD(c.ui).run()
+    coordinator = Coordinator()
+    coordinator.start()
+    workers = [
+        threading.Thread(
+            target=connect_agent,
+            args=(coordinator, agent_id),
+            name=f"tmrl-agent-{agent_id:02d}",
+            daemon=True,
+        )
+        for agent_id in range(POPULATION)
+    ]
+    for worker in workers:
+        worker.start()
 
-if __name__=="__main__":main()
+    LOG.info("started %d TMInterface agent workers", POPULATION)
+    StandaloneHUD(coordinator.ui_event).run()
+    coordinator.running = False
+
+if __name__ == "__main__":
+    main()
