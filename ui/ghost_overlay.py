@@ -57,6 +57,16 @@ class GhostOverlay:
         user32 = ctypes.windll.user32
         get_style = user32.GetWindowLongPtrW
         set_style = user32.SetWindowLongPtrW
+
+        # ctypes does not know the Win32 LONG_PTR signatures automatically.
+        # Explicit pointer-sized types prevent 64-bit callback addresses from
+        # being truncated/treated as 32-bit integers.
+        ptr_t = ctypes.c_ssize_t
+        get_style.argtypes = [wintypes.HWND, ctypes.c_int]
+        get_style.restype = ptr_t
+        set_style.argtypes = [wintypes.HWND, ctypes.c_int, ptr_t]
+        set_style.restype = ptr_t
+
         style = get_style(hwnd, GWL_EXSTYLE)
         set_style(
             hwnd,
@@ -79,7 +89,8 @@ class GhostOverlay:
         # callback and old pointer alive for the lifetime of the overlay.
         get_proc = user32.GetWindowLongPtrW
         self._old_wndproc = get_proc(hwnd, -4)
-        set_style(hwnd, -4, ctypes.cast(self._wndproc, ctypes.c_void_p).value)
+        wndproc_ptr = ctypes.cast(self._wndproc, ctypes.c_void_p).value
+        set_style(hwnd, -4, ctypes.c_ssize_t(wndproc_ptr).value)
 
         user32.SetWindowPos(
             hwnd,
